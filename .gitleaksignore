@@ -1,0 +1,7 @@
+# Test fixture in tests/unit/test_cli.py:52 — verified benign by code review.
+# The literal string "sk-test-key-12345678" is a deterministic test value
+# used by the CLI test suite; it has never been a real secret. Working-tree
+# scans are suppressed by an inline `# gitleaks:allow` comment, but the
+# pre-subtree-split commit still triggers gitleaks on full-history scans.
+# Suppressing by exact fingerprint:
+d738ae21c533c978548dbb11821cc0e015b58aa1:tests/unit/test_cli.py:generic-api-key:52

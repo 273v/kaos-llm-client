@@ -1,0 +1,171 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kaos-llm-client"
+dynamic = ["version"]
+description = "Thin, provider-native LLM client for direct model calls within the KAOS ecosystem"
+readme = "README.md"
+requires-python = ">=3.13"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [
+  { name = "273 Ventures LLC", email = "it@273ventures.com" },
+]
+keywords = [
+  "llm",
+  "openai",
+  "anthropic",
+  "google",
+  "xai",
+  "mcp",
+  "agentic",
+  "kaos",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: Science/Research",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Topic :: Scientific/Engineering :: Information Analysis",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = [
+  "httpx[http2]>=0.28",
+  "pydantic>=2.11.0",
+  "pydantic-settings>=2.8.1",
+  "kaos-core>=0.1.0a1",
+]
+
+# NOTE: the [mcp] extra is not declared at 0.1.0a1 because the underlying
+# kaos-mcp package is not yet published to PyPI. ``uv lock`` is strict and
+# refuses to resolve any declared extra whose package is not resolvable.
+# The extra will be re-added in 0.1.0a2 once kaos-mcp ships. Until then,
+# users wanting the MCP server can install kaos-mcp manually from source.
+[project.optional-dependencies]
+# Microsoft Entra ID / Azure AD authentication for Azure OpenAI.
+# Pulls in Microsoft's official `azure-identity` SDK (MIT-licensed,
+# from `Azure/azure-sdk-for-python`).
+#
+# Required ONLY if you pass `azure_ad_token_provider=` (e.g. wrapping
+# `DefaultAzureCredential`, `ManagedIdentityCredential`,
+# `WorkloadIdentityCredential`, etc.) into `AzureOpenAIClient` or
+# `AzureOpenAIResponsesClient`. Without this extra, api-key auth via
+# `azure_openai_api_key=` still works on every Azure endpoint
+# (regional + custom-subdomain).
+#
+# Footprint: ~16 MB transitive (azure-identity itself is ~190 KB; the
+# bulk is `cryptography` — required for MSAL JWT signing and Azure CLI
+# shared-cache decryption — plus msal, msal-extensions, requests).
+azure = [
+  "azure-identity>=1.25.3",
+]
+
+[project.scripts]
+kaos-llm-client = "kaos_llm_client.cli:main"
+kaos-llm-serve = "kaos_llm_client.serve:main"
+
+[project.urls]
+Homepage = "https://kelvin.legal"
+Documentation = "https://docs.kelvin.legal"
+Repository = "https://github.com/273v/kaos-llm-client"
+Issues = "https://github.com/273v/kaos-llm-client/issues"
+Changelog = "https://github.com/273v/kaos-llm-client/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.0.3",
+  "pytest-asyncio>=1.3.0",
+  "pytest-cov>=7.1.0",
+  "ruff>=0.15.12",
+  "ty>=0.0.34,<0.1",
+]
+
+[tool.hatch.version]
+path = "kaos_llm_client/_version.py"
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "/kaos_llm_client",
+  "/tests/unit",
+  "/docs",
+  "/README.md",
+  "/CHANGELOG.md",
+  "/LICENSE",
+  "/NOTICE",
+  "/SECURITY.md",
+  "/pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["kaos_llm_client"]
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+  "-ra",
+  "--strict-markers",
+  "--strict-config",
+  "--cov=kaos_llm_client",
+  "--cov-branch",
+  "--cov-report=term-missing",
+]
+markers = [
+  "integration: end-to-end behavior checks requiring API credentials",
+  "unit: focused unit checks",
+]
+
+[tool.coverage.run]
+source = ["kaos_llm_client"]
+branch = true
+omit = [
+  "*/tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+  "@abstractmethod",
+]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF", "C4", "PTH"]
+
+[tool.ruff.lint.per-file-ignores]
+# cache.py declares ``/tmp``, ``/var/tmp``, and ``/var/folders`` as members
+# of an allowlist that *restricts* where ``FileCache.clear()`` may run
+# ``shutil.rmtree``. They are not used to create temp files. The strings
+# trigger bandit B108 / ruff S108 by literal match, with documented
+# ``# nosec`` rationale inline; this per-file ignore makes ``ruff
+# --select S`` agree.
+"kaos_llm_client/cache.py" = ["S108"]
+# transport.py uses ``random.uniform`` for full-jitter exponential backoff.
+# Backoff jitter is a load-balancing concern (avoid thundering-herd retries),
+# not a cryptographic one — ``secrets.SystemRandom`` would burn entropy with
+# no security benefit. Rationale is also documented inline at the call site.
+"kaos_llm_client/transport.py" = ["S311"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["kaos_llm_client"]
+
+[tool.ty.src]
+include = ["kaos_llm_client", "tests"]
+
+[tool.uv]
+package = true
