@@ -327,7 +327,18 @@ class ModelProfile:
 
     # Provider metadata
     provider_name: str = ""
-    default_max_tokens: int = 4096
+    # Output token budget. Frontier models in 2026 support 64K-200K+ output;
+    # 100K is the right default — it lets the model finish a long deliverable
+    # and matches what every major provider supports natively (OpenAI gpt-5.x:
+    # 128K, OpenAI reasoning o3/o4: 200K, Google gemini-2.5/3: 64K-128K,
+    # xAI grok-4: 128K). Anthropic Claude 4.x caps at 64K *without* beta
+    # headers — the per-model resolver clamps Anthropic profiles down to
+    # 64K, but everywhere else this is the floor we operate from.
+    # Historical 4096 default dated to Claude 2 / GPT-3.5 era and silently
+    # truncated multi-page deliverables — see the Harvey CoC bench
+    # 2026-05-06 truncation incident: `docs/benchmarks/harvey-coc-2026-05-06.json`
+    # deliverable cuts off mid-sentence at exactly the 4096-token boundary.
+    default_max_tokens: int = 100_000
 
     def update(self, **kwargs: Any) -> ModelProfile:
         """Return a new profile with the given fields replaced."""
@@ -384,7 +395,9 @@ OPENAI_DEFAULT = OpenAIModelProfile(
     max_tokens_field="max_tokens",
     json_schema_transformer=OpenAIJsonSchemaTransformer,
     provider_name="openai",
-    default_max_tokens=4096,
+    # gpt-5.x supports 128K output; gpt-4o/4.1 support 16K-32K. Default
+    # high; specific gpt-4 variants can pin lower per call if needed.
+    default_max_tokens=128_000,
 )
 
 OPENAI_REASONING = OpenAIModelProfile(
@@ -396,7 +409,11 @@ OPENAI_REASONING = OpenAIModelProfile(
     thinking_parameter="reasoning",
     json_schema_transformer=OpenAIJsonSchemaTransformer,
     provider_name="openai",
-    default_max_tokens=16384,
+    # Reasoning models (o-series, gpt-5.5) burn output tokens on hidden
+    # chain-of-thought before the visible answer. 200K matches the
+    # published o3/o4 reasoning ceiling and gives the visible answer
+    # plenty of room after thinking.
+    default_max_tokens=200_000,
     supports_reasoning_effort=True,
     supports_service_tier=False,
 )
@@ -412,7 +429,8 @@ AZURE_OPENAI_DEFAULT = OpenAIModelProfile(
     max_tokens_field="max_completion_tokens",
     json_schema_transformer=OpenAIJsonSchemaTransformer,
     provider_name="azure-openai",
-    default_max_tokens=4096,
+    # Azure tracks OpenAI's ceilings for the underlying model.
+    default_max_tokens=128_000,
     supports_service_tier=False,
 )
 
@@ -432,12 +450,22 @@ ANTHROPIC_DEFAULT = AnthropicModelProfile(
     thinking_parameter="thinking",
     stream_format="anthropic_sse",
     provider_name="anthropic",
-    default_max_tokens=4096,
+    # Anthropic raised the header-free ceiling on Sonnet 4.5/4.6 and
+    # Opus 4.7 to 100K output (verified live 2026-05-06). Haiku 4.5
+    # still hard-caps at 64K — the per-model resolver pins Haiku down.
+    # The 1M-token output beta (`anthropic-beta: max-tokens-1m-*`) is
+    # available for deployments that need to go higher, but 100K is
+    # the right floor for everyday work — long deliverables fit
+    # comfortably in this budget.
+    default_max_tokens=100_000,
     supports_extended_thinking=True,
 )
 
 # Legacy Anthropic profile for pre-4.x models that do not support
 # ``output_config.format``. Kept exported for tests + caller pinning.
+# Claude 3.5/3.7 supported 8K output; Claude 3 supported 4K. We pick
+# 8K as the safe value that works across all 3.x models — callers
+# pinning to 3.x can override per-call.
 ANTHROPIC_TOOL_FALLBACK = AnthropicModelProfile(
     supports_vision=True,
     supports_thinking=True,
@@ -449,7 +477,7 @@ ANTHROPIC_TOOL_FALLBACK = AnthropicModelProfile(
     thinking_parameter="thinking",
     stream_format="anthropic_sse",
     provider_name="anthropic",
-    default_max_tokens=4096,
+    default_max_tokens=8_192,
     supports_extended_thinking=True,
 )
 
@@ -462,7 +490,9 @@ GOOGLE_DEFAULT = GoogleModelProfile(
     json_schema_transformer=GoogleJsonSchemaTransformer,
     stream_format="google_sse",
     provider_name="google",
-    default_max_tokens=4096,
+    # Gemini 2.0 / 1.5 supported 8K-32K output; this default also covers
+    # generic Gemini callers. 2.5+ models pick up GOOGLE_THINKING (below).
+    default_max_tokens=100_000,
 )
 
 OPENAI_COMPATIBLE_DEFAULT = ModelProfile(
@@ -471,7 +501,9 @@ OPENAI_COMPATIBLE_DEFAULT = ModelProfile(
     default_structured_output_mode=StructuredOutputMode.PROMPTED,
     max_tokens_field="max_tokens",
     provider_name="openai-compatible",
-    default_max_tokens=4096,
+    # Generic OpenAI-compatible (vLLM, Ollama, LiteLLM, etc.). Many
+    # serve frontier models too — default high.
+    default_max_tokens=100_000,
 )
 
 XAI_DEFAULT = ModelProfile(
@@ -480,7 +512,8 @@ XAI_DEFAULT = ModelProfile(
     default_structured_output_mode=StructuredOutputMode.TOOL,
     max_tokens_field="max_tokens",
     provider_name="xai",
-    default_max_tokens=4096,
+    # grok-2/3 caps. grok-4 picks up XAI_GROK4 below.
+    default_max_tokens=32_768,
 )
 
 
@@ -500,7 +533,8 @@ GOOGLE_THINKING = GoogleModelProfile(
     stream_format="google_sse",
     thinking_parameter="thinkingConfig",
     provider_name="google",
-    default_max_tokens=8192,
+    # Gemini 2.5/3 thinking models support 64K-1M output. Default high.
+    default_max_tokens=100_000,
 )
 
 # Grok 4 supports builtin tools
@@ -511,7 +545,8 @@ XAI_GROK4 = ModelProfile(
     default_structured_output_mode=StructuredOutputMode.TOOL,
     max_tokens_field="max_tokens",
     provider_name="xai",
-    default_max_tokens=4096,
+    # Grok 4 supports 128K output.
+    default_max_tokens=131_072,
 )
 
 
@@ -539,9 +574,28 @@ _PROVIDER_PROFILES: dict[str, ModelProfile] = {
 
 
 def _resolve_openai_profile(model: str) -> ModelProfile:
-    """Resolve profile for OpenAI models."""
+    """Resolve profile for OpenAI models.
+
+    Output-token ceilings as of 2026:
+    - o1 / o3 / o4 reasoning: 200K (most allotted to hidden CoT)
+    - gpt-5.5 (reasoning): 200K
+    - gpt-5.x (non-reasoning): 128K
+    - gpt-4.1: 32K
+    - gpt-4o: 16K
+    - gpt-4 / gpt-3.5: 4K-8K (legacy)
+    """
     if model.startswith(("o1", "o3", "o4", "gpt-5.5")):
-        return OPENAI_REASONING
+        return OPENAI_REASONING  # 200K
+    if model.startswith("gpt-5"):
+        return OPENAI_DEFAULT  # 128K
+    if model.startswith("gpt-4.1"):
+        return OPENAI_DEFAULT.update(default_max_tokens=32_768)
+    if model.startswith("gpt-4o"):
+        return OPENAI_DEFAULT.update(default_max_tokens=16_384)
+    if model.startswith("gpt-4"):
+        return OPENAI_DEFAULT.update(default_max_tokens=8_192)
+    if model.startswith("gpt-3.5"):
+        return OPENAI_DEFAULT.update(default_max_tokens=4_096)
     return OPENAI_DEFAULT
 
 
@@ -558,21 +612,116 @@ def _resolve_azure_openai_profile(model: str) -> ModelProfile:
 
 
 def _resolve_anthropic_profile(model: str) -> ModelProfile:
-    """Resolve profile for Anthropic models."""
+    """Resolve profile for Anthropic models.
+
+    Output-token ceilings as of 2026-05 (verified live, no beta headers):
+    - Claude Sonnet 4.5+ / Opus 4.5+: 100K output (header-free)
+    - Claude Sonnet 4 (May 2025 dated): 64K output (legacy)
+    - Claude Haiku 4.5: 64K output (hard cap below Sonnet/Opus)
+    - Claude 3.x family: 8K output (Sonnet 3.5/3.7) or 4K (3.0)
+    - Claude 2.x: 4K output (legacy)
+
+    The 1M-token output beta header (`anthropic-beta:
+    max-tokens-1m-*`) is available for deployments that need to go
+    higher than 100K — flip it on at call time.
+    """
+    # Sonnet 4.5+ and Opus 4.5+ — 100K output (verified live).
+    # Strict prefix match: only models we've verified accept 100K
+    # without a beta header. Older dated 4.x models (e.g.
+    # ``claude-sonnet-4-20250514``) still cap at 64K and 400 if we
+    # send 100K, so they fall through to the conservative default.
+    if model.startswith(
+        (
+            "claude-sonnet-4-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-4-7",
+            "claude-sonnet-4-8",
+            "claude-sonnet-4-9",
+            "sonnet-4-5",
+            "sonnet-4-6",
+            "sonnet-4-7",
+            "sonnet-4-8",
+            "sonnet-4-9",
+            "claude-opus-4-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-4-9",
+            "opus-4-5",
+            "opus-4-6",
+            "opus-4-7",
+            "opus-4-8",
+            "opus-4-9",
+        )
+    ):
+        return ANTHROPIC_DEFAULT  # 100K
+
+    # Other Claude 4.x (Haiku 4.x, dated Sonnet/Opus 4.0) — 64K cap.
+    if model.startswith(
+        (
+            "claude-haiku-4",
+            "claude-sonnet-4",
+            "claude-opus-4",
+            "haiku-4",
+            "sonnet-4",
+            "opus-4",
+        )
+    ):
+        return ANTHROPIC_DEFAULT.update(default_max_tokens=64_000)
+
+    # Claude 3.5 / 3.7 — 8K output, no native structured output
+    if model.startswith(
+        (
+            "claude-3-5",
+            "claude-3.5",
+            "claude-3-7",
+            "claude-3.7",
+        )
+    ):
+        return ANTHROPIC_TOOL_FALLBACK  # 8K, tool-based JSON
+
+    # Claude 3.0 / 2.x — 4K output legacy
+    if model.startswith(("claude-3", "claude-2")):
+        return ANTHROPIC_TOOL_FALLBACK.update(default_max_tokens=4_096)
+
+    # Unknown claude-* model — default to current-gen defaults
     return ANTHROPIC_DEFAULT
 
 
 def _resolve_google_profile(model: str) -> ModelProfile:
-    """Resolve profile for Google models."""
-    if model.startswith(("gemini-2.5", "gemini-3")):
-        return GOOGLE_THINKING
+    """Resolve profile for Google models.
+
+    Output-token ceilings as of 2026:
+    - Gemini 3.x: 64K-128K output
+    - Gemini 2.5 Pro: 64K output (with thinking)
+    - Gemini 2.0: 8K output
+    - Gemini 1.5: 8K output
+    """
+    if model.startswith("gemini-3"):
+        return GOOGLE_THINKING  # 64K
+    if model.startswith("gemini-2.5"):
+        return GOOGLE_THINKING  # 64K
+    if model.startswith("gemini-2.0"):
+        return GOOGLE_DEFAULT.update(default_max_tokens=8_192)
+    if model.startswith("gemini-1"):
+        return GOOGLE_DEFAULT.update(default_max_tokens=8_192)
     return GOOGLE_DEFAULT
 
 
 def _resolve_xai_profile(model: str) -> ModelProfile:
-    """Resolve profile for xAI models."""
+    """Resolve profile for xAI models.
+
+    Output-token ceilings as of 2026:
+    - grok-4 / grok-4-1 / grok-4.20: 128K output
+    - grok-3: 16K output
+    - grok-2: 8K output
+    """
     if model.startswith("grok-4"):
-        return XAI_GROK4
+        return XAI_GROK4  # 128K
+    if model.startswith("grok-3"):
+        return XAI_DEFAULT.update(default_max_tokens=16_384)
+    if model.startswith("grok-2"):
+        return XAI_DEFAULT.update(default_max_tokens=8_192)
     return XAI_DEFAULT
 
 
