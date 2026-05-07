@@ -113,7 +113,12 @@ class TestResolveProfile:
 
     def test_google_provider(self):
         profile = resolve_profile("google", "gemini-2.0-flash")
-        assert profile is GOOGLE_DEFAULT
+        # Resolver returns a per-model variant (Gemini 2.0 caps at 8K
+        # output, while GOOGLE_DEFAULT defaults to 65K for unknown models).
+        # Identity check would fail since `.update()` produces a fresh
+        # instance — assert the structural fields instead.
+        assert profile.provider_name == "google"
+        assert profile.default_max_tokens == 8_192
 
     def test_google_25_gets_thinking_profile(self):
         from kaos_llm_client.profiles import GOOGLE_THINKING
@@ -124,7 +129,11 @@ class TestResolveProfile:
 
     def test_xai_provider(self):
         profile = resolve_profile("xai", "grok-3")
-        assert profile is XAI_DEFAULT
+        # Resolver returns a per-model variant (grok-3 caps at 16K
+        # output). Identity check would fail since `.update()` produces
+        # a fresh instance.
+        assert profile.provider_name == "xai"
+        assert profile.default_max_tokens == 16_384
 
     def test_unknown_provider_gets_compatible(self):
         profile = resolve_profile("unknown", "my-model")
@@ -212,9 +221,12 @@ class TestProfileUpdate:
         assert updated.supports_vision is True
         assert updated.default_max_tokens == 8192
         assert updated.provider_name == "test"
-        # Original is unchanged (frozen)
+        # Original is unchanged (frozen). Default max_tokens follows the
+        # 2026 frontier-model floor; bumped from 4096 alongside the
+        # provider-specific profiles so a deliverable doesn't truncate
+        # at a Claude-2-era ceiling.
         assert original.supports_vision is False
-        assert original.default_max_tokens == 4096
+        assert original.default_max_tokens == 100_000
 
     def test_update_returns_same_type(self):
         """update() on a subclass returns the same subclass type."""
@@ -240,8 +252,12 @@ class TestResolverFunctions:
         assert _resolve_anthropic_profile("claude-sonnet-4-6") is ANTHROPIC_DEFAULT
 
     def test_resolve_google_default(self):
-        """Google resolver returns GOOGLE_DEFAULT for non-thinking models."""
-        assert _resolve_google_profile("gemini-2.0-flash") is GOOGLE_DEFAULT
+        """Google resolver returns Gemini-2.0-tuned profile for non-thinking models."""
+        # 2.0 ceilings at 8K output; resolver returns
+        # GOOGLE_DEFAULT.update(default_max_tokens=8192).
+        profile = _resolve_google_profile("gemini-2.0-flash")
+        assert profile.provider_name == "google"
+        assert profile.default_max_tokens == 8_192
 
     def test_resolve_google_thinking(self):
         """Google resolver returns GOOGLE_THINKING for 2.5+ models."""
@@ -251,8 +267,10 @@ class TestResolverFunctions:
         assert _resolve_google_profile("gemini-3-ultra") is GOOGLE_THINKING
 
     def test_resolve_xai_default(self):
-        """xAI resolver returns XAI_DEFAULT for non-grok-4 models."""
-        assert _resolve_xai_profile("grok-3") is XAI_DEFAULT
+        """xAI resolver returns grok-3-tuned profile for non-grok-4 models."""
+        profile = _resolve_xai_profile("grok-3")
+        assert profile.provider_name == "xai"
+        assert profile.default_max_tokens == 16_384
 
     def test_resolve_xai_grok4(self):
         """xAI resolver returns XAI_GROK4 for grok-4 models."""

@@ -7,6 +7,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0a2] — 2026-05-07
+
+### Changed
+
+- **`SamplingRequest`-style provider profiles bumped to 2026 frontier-model
+  output budgets.** The 2023-era `default_max_tokens=4096` floor truncated
+  multi-page deliverables — the Harvey CoC bench
+  (`docs/benchmarks/harvey-coc-2026-05-06.json`) cut off mid-sentence at
+  exactly the 4096-token boundary. New per-provider defaults:
+  - OpenAI gpt-5.x: 128K (was 4K)
+  - OpenAI reasoning (o3/o4, gpt-5.5): 200K (was 16K) — covers hidden
+    chain-of-thought + visible answer
+  - Azure OpenAI: 128K (tracks the underlying OpenAI model ceiling)
+  - Anthropic Sonnet 4.5+ / Opus 4.7+: 100K (was 4K) — header-free,
+    matches the published 2026-05-06 Anthropic ceiling
+  - Anthropic 3.x: 8K — Claude 3.5/3.7 supported 8K, 3.0 supported 4K;
+    8K is the safe value across the 3.x line
+  - Google Gemini 2.5+ thinking models: 100K (was 4K)
+  - Google Gemini 2.0: 8K (matches the published 2.0 ceiling)
+  - xAI grok-4: 128K (was 4K)
+  - xAI grok-3: 16K (matches the published grok-3 ceiling)
+  - Per-provider resolvers now clamp Anthropic Haiku 4.5 down to 64K
+    (header-free) since Haiku does NOT support the 100K Sonnet/Opus
+    ceiling. Same pattern applies to Google's non-thinking 2.0 models
+    (returns the 8K-tuned profile instead of the 100K default).
+  Aligned with the same bump in `kaos-core` and `kaos-agents`.
+
+- **`maintainers` field added to `pyproject.toml`** (cross-package
+  metadata consistency). The next published wheel + sdist carry
+  `Maintainer-email: Michael Bommarito <mike@273ventures.com>`
+  alongside the existing `Author-email: 273 Ventures LLC`.
+
+### Fixed
+
+- **Audit-01 KLC-01 (Medium): MCP tool layer now honours
+  `KaosContext._config`.** Previously each of the seven tool classes in
+  `kaos_llm_client/tools.py` instantiated `KaosLLMSettings()` directly
+  and passed `settings=` to `create_client()`, which silently dropped
+  the documented per-request override path described in
+  `KaosLLMSettings.from_context`. The fix routes inference tools through
+  `create_client(model, context=context)` (so `from_context` is invoked
+  inside `BaseProviderClient.__init__`); `KaosLLMProviderCheckTool`
+  builds `settings = KaosLLMSettings.from_context(context)` directly
+  since it introspects settings without constructing a client. Added
+  `tests/unit/test_tools.py::TestToolContextConfigHonoured` regression
+  test asserting that a `_config={"openai_api_key": "…"}` override on
+  the context wins over a cleared environment.
+
+- **Audit-01 KLC-02 (Medium): `[mcp]` extra promotion contract
+  documented.** The monorepo source declares `[mcp]` (resolves locally
+  via `[tool.uv.sources]`); this per-module repo strips the extra at
+  release time per F009 lesson #4 (uv lock refuses to resolve
+  unpublished siblings). The strip is the natural CI gate. Re-add the
+  extra at the next patch release (`0.1.0a3`+) once `kaos-mcp` ships
+  to PyPI. Closing the audit finding by making the contract explicit.
+
+### Refactored
+
+- **Audit-01 KLC-03 (Low): split `kaos_llm_client/tools.py` into a
+  `tools/` subpackage.** The single 1554-line module mixed seven MCP
+  tool classes with shared helpers, artifact storage, error formatting,
+  and pricing lookup. New layout (largest file 265 lines, well under
+  the 800-line review threshold):
+  - `tools/__init__.py` — public re-exports + `register_llm_tools`
+  - `tools/_common.py` — shared helpers (logger, `_tool_log_extra`,
+    `_store_artifact`, `_format_llm_error`, annotations, constants)
+  - `tools/chat.py`, `structured.py`, `tool_call.py`, `pydantic.py` —
+    generative tools (one per file)
+  - `tools/embed.py` — `KaosLLMEmbedTool` + `_estimate_tokens`
+  - `tools/provider_check.py`, `cost_estimate.py` — local/info tools
+  No public-API change: every name reachable as
+  `from kaos_llm_client.tools import …` before remains reachable now,
+  including private helpers (`_estimate_tokens`, `_lookup_pricing`)
+  preserved for downstream test compatibility.
+
+### Audit closure note
+
+- **Audit-01 KLC-04 (Low): top-level `__all__` already alphabetically
+  sorted.** Re-verified with `ruff check --fix` (no edits proposed).
+  The audit applied a stricter pure-alphabetical view than the
+  project's enforced linter; the existing RUF022 canonical
+  (SCREAMING_CASE / PascalCase / dunders / snake_case, alphabetical
+  within each group) is what we ship.
+
 ## [0.1.0a1] — 2026-05-05
 
 First public alpha release. Thin, provider-native LLM client for direct
@@ -100,5 +184,6 @@ model calls within the KAOS (Kelvin Agentic Operating System) platform.
 - This release is the first to ship under the Apache License 2.0. Earlier
   internal versions were proprietary.
 
-[Unreleased]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a1...HEAD
+[Unreleased]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a2...HEAD
+[0.1.0a2]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/273v/kaos-llm-client/releases/tag/v0.1.0a1

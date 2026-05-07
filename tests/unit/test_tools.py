@@ -352,6 +352,79 @@ class TestProviderCheckTool:
 
 
 # ---------------------------------------------------------------------------
+# Tool-layer KaosContext._config override (KLC-01 regression test)
+# ---------------------------------------------------------------------------
+
+
+class _FakeContext:
+    """Minimal stand-in for kaos_core.context.KaosContext.
+
+    KaosLLMSettings.from_context only reads getattr(context, "_config",
+    None), so we don't need the real type for this assertion.
+    """
+
+    def __init__(self, _config: dict[str, Any] | None = None) -> None:
+        self._config = _config or {}
+        self.session_id: str | None = None
+        self.trace_id: str | None = None
+
+
+class TestToolContextConfigHonoured:
+    """KLC-01 regression: MCP tools must honour ``KaosContext._config``.
+
+    Previously each tool's ``execute()`` did
+    ``settings = KaosLLMSettings(); create_client(model, settings=settings)``
+    which silently dropped the per-request ``_config`` override path.
+    The fix routes through ``from_context(context)`` (for tools that
+    introspect settings directly) or omits ``settings=`` entirely so
+    ``BaseProviderClient.__init__`` invokes ``from_context`` itself.
+
+    This test exercises the simplest representative tool —
+    ``KaosLLMProviderCheckTool`` — because it inspects settings without
+    issuing HTTP requests, so the assertion does not need a mock
+    transport.
+    """
+
+    def test_provider_check_tool_honours_context_config_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Clear environment to prove the override (not a leaked env var)
+        # is what configures the provider.
+        for var in (
+            "KAOS_LLM_OPENAI_API_KEY",
+            "OPENAI_API_KEY",
+            "KAOS_LLM_ANTHROPIC_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "KAOS_LLM_GOOGLE_API_KEY",
+            "GOOGLE_API_KEY",
+            "GOOGLE_GENERATIVE_AI_API_KEY",
+            "KAOS_LLM_XAI_API_KEY",
+            "XAI_API_KEY",
+            "KAOS_LLM_GROQ_API_KEY",
+            "GROQ_API_KEY",
+            "KAOS_LLM_MISTRAL_API_KEY",
+            "MISTRAL_API_KEY",
+            "KAOS_LLM_OPENROUTER_API_KEY",
+            "OPENROUTER_API_KEY",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        # _config carries an OpenAI key — only the tool sees it (no env).
+        ctx = _FakeContext(_config={"openai_api_key": "sk-from-context-override"})
+
+        tool = KaosLLMProviderCheckTool()
+        result = _run(tool.execute({"providers": ["openai"]}, context=cast(Any, ctx)))
+
+        assert not result.isError
+        output = result.require_structured()
+        openai_row = next(p for p in output["providers"] if p["name"] == "openai")
+        assert openai_row["configured"] is True, (
+            "KLC-01 regression: tool ignored KaosContext._config override "
+            "(audit fix bypass returned)."
+        )
+
+
+# ---------------------------------------------------------------------------
 # CostEstimateTool tests
 # ---------------------------------------------------------------------------
 
