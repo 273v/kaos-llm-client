@@ -18,4 +18,3 @@ build/
 # at 0.1.0a2 once kaos-mcp ships) would carry an unresolvable sibling
 # pin. Re-track this file when extras come back. See F009 #4 in the
 # kaos-modules OSS plan.
-uv.lock
