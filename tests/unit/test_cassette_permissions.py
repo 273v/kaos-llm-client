@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import stat
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,19 @@ from kaos_llm_client.types import (
     ProviderRequest,
     ProviderResponse,
     UsageInfo,
+)
+
+# POSIX permission bits (0o600 / 0o700) don't translate to Windows
+# ACLs — ``Path.chmod`` is essentially a no-op there, and freshly
+# created files report 0o666 / directories 0o777. The cassette
+# permission contract is documented as POSIX-only (shared/multi-tenant
+# Unix hosts); the Windows path relies on NTFS / per-user profile
+# isolation instead. Skip the assertions on Windows so the test
+# matrix's Windows leg doesn't false-fail; the POSIX behavior is
+# still covered on Linux + macOS.
+_posix_only = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="POSIX permission bits don't apply on Windows (NTFS ACLs)",
 )
 
 
@@ -80,6 +94,7 @@ def _normal_umask() -> Any:
         os.umask(old)
 
 
+@_posix_only
 class TestCassetteSavePermissions:
     def test_file_mode_is_0o600(self, tmp_path: Path) -> None:
         cassette = Cassette()
