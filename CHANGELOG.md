@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`FileCache.clear()` safe-clear allowlist now works on Windows.**
+  The allowlist previously hardcoded ``/tmp`` / ``/var/tmp`` /
+  ``/var/folders`` plus ``~/.cache``. On Windows those POSIX paths
+  resolve to ``D:\tmp`` etc. (the drive root), none of which contain
+  pytest's tmpdir at ``C:\Users\...\AppData\Local\Temp\...``, so
+  every cache-clear under the new Windows-x64 CI leg raised
+  ``RuntimeError: FileCache.clear() refused: ... is outside the
+  safe-clear allowlist``. Added ``Path(tempfile.gettempdir())`` to
+  the allowlist (resolved at module-load) so the platform tempdir
+  is always permitted on every OS. The original POSIX-flavored
+  entries are kept so explicit ``/tmp/...`` cache paths still
+  resolve as before. Files: ``kaos_llm_client/cache.py``.
+- **Tests: cassette permission asserts gated to POSIX.**
+  ``test_cassette_permissions.TestCassetteSavePermissions`` asserts
+  ``_file_mode(out) == 0o600`` / ``0o700``. On Windows these report
+  ``0o666`` / ``0o777`` because ``Path.chmod`` is essentially a no-op
+  there (NTFS uses ACLs, not POSIX bits). The cassette permission
+  contract is documented as POSIX-only — Windows relies on per-user
+  profile / NTFS ACL isolation instead. The class now carries a
+  ``sys.platform == "win32"`` skip; POSIX behavior is still covered
+  on Linux + macOS. Files:
+  ``tests/unit/test_cassette_permissions.py``.
+
 ## [0.1.0a2] — 2026-05-07
 
 ### Changed

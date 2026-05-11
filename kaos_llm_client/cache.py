@@ -26,6 +26,7 @@ import gzip
 import hashlib
 import json
 import os
+import tempfile
 from abc import ABC, abstractmethod
 from pathlib import Path
 
@@ -50,8 +51,15 @@ _FILE_MODE = 0o600
 # here is the *opposite* of insecure: these paths form a defensive
 # allowlist that REJECTS clears outside of them. We are not creating
 # temp files; we are restricting where ``rmtree`` can run.
+#
+# ``tempfile.gettempdir()`` is included so the allowlist works on
+# Windows (where the platform tempdir is under
+# ``%LOCALAPPDATA%\Temp``, not ``/tmp``) and on any POSIX host whose
+# ``TMPDIR`` is set to a non-default location. Resolved at import
+# time so the result is stable across calls.
 _CLEAR_ALLOWLIST_ROOTS: tuple[Path, ...] = (
     Path.home() / ".cache",
+    Path(tempfile.gettempdir()),
     Path("/tmp"),  # nosec B108  — allowlist entry, not temp-file use
     Path("/var/tmp"),  # nosec B108  — allowlist entry, not temp-file use
     Path("/var/folders"),  # nosec B108  — macOS per-user temp allowlist entry
