@@ -5,7 +5,8 @@ All notable changes to `kaos-llm-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+
+## [0.1.0a3] — 2026-05-11
 
 ### Fixed
 
@@ -232,6 +233,7 @@ model calls within the KAOS (Kelvin Agentic Operating System) platform.
 - This release is the first to ship under the Apache License 2.0. Earlier
   internal versions were proprietary.
 
-[Unreleased]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a2...HEAD
+[Unreleased]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a3...HEAD
+[0.1.0a3]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a2...v0.1.0a3
 [0.1.0a2]: https://github.com/273v/kaos-llm-client/compare/v0.1.0a1...v0.1.0a2
 [0.1.0a1]: https://github.com/273v/kaos-llm-client/releases/tag/v0.1.0a1
