@@ -297,3 +297,57 @@ class TestOpenAIClientNativeJson:
         # String form: reasoning="low" → reasoning_effort="low"
         req2 = client._build_request(messages, reasoning="low")
         assert req2.body["reasoning_effort"] == "low"
+
+    def test_reasoning_model_strips_temperature_and_top_p(self):
+        """PA16 (release blocker): reasoning models reject temperature/top_p.
+
+        Sprint-2 #5 hard-coded ``temperature=0`` everywhere in
+        FindingsAgent for deterministic ``finding_id``s, but reasoning
+        models (o3, o3-mini, o4-mini, gpt-5.5 in reasoning mode) reject
+        the ``temperature`` and ``top_p`` parameters with HTTP 400
+        "temperature is not supported for this model". The OpenAI
+        client must strip them silently when the model profile sets
+        ``supports_temperature=False`` so callers passing
+        ``temperature=0`` keep working.
+        """
+        # Reasoning model — temperature/top_p must be stripped.
+        for model in ("o3", "o3-mini", "o4-mini", "gpt-5.5"):
+            client = _make_openai_client(model=model)
+            req = client._build_request(
+                [{"role": "user", "content": "hi"}],
+                temperature=0.0,
+                top_p=1.0,
+            )
+            assert "temperature" not in req.body, (
+                f"{model}: reasoning model must reject ``temperature`` "
+                f"with HTTP 400; the client must strip it from the "
+                f"request body before send."
+            )
+            assert "top_p" not in req.body, (
+                f"{model}: reasoning model rejects ``top_p`` too — "
+                f"the client must strip it alongside ``temperature``."
+            )
+
+    def test_non_reasoning_model_passes_temperature_through(self):
+        """Standard chat models still receive ``temperature``.
+
+        Companion to ``test_reasoning_model_strips_temperature_and_top_p``
+        — confirms the gate only fires when ``supports_temperature`` is
+        explicitly ``False`` on the profile, and standard chat models
+        like ``gpt-5`` / ``gpt-4o`` keep their existing behaviour.
+        """
+        for model in ("gpt-5", "gpt-5.4", "gpt-4o"):
+            client = _make_openai_client(model=model)
+            req = client._build_request(
+                [{"role": "user", "content": "hi"}],
+                temperature=0.0,
+                top_p=0.9,
+            )
+            assert req.body.get("temperature") == 0.0, (
+                f"{model}: standard chat model must receive "
+                f"``temperature`` verbatim; the reasoning-model gate "
+                f"should not fire here."
+            )
+            assert req.body.get("top_p") == 0.9, (
+                f"{model}: standard chat model must receive ``top_p`` verbatim."
+            )
