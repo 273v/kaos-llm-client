@@ -191,6 +191,19 @@ class OpenAICompatibleClient(BaseProviderClient):
         ):
             body["service_tier"] = self._settings.default_service_tier
 
+        # Reasoning models (o3, o3-mini, o4-mini, gpt-5.5, gpt-5-thinking)
+        # reject ``temperature`` and ``top_p`` with HTTP 400 "temperature
+        # is not supported for this model". Strip them silently — callers
+        # passing ``temperature=0`` for determinism (e.g. FindingsAgent's
+        # Sprint-2 #5 deterministic finding_ids) work fine without the
+        # parameter because reasoning-model decoding is intrinsically
+        # near-deterministic at the default temperature. Same shape as
+        # the ``supports_service_tier`` gate above.
+        supports_temperature = getattr(self.profile, "supports_temperature", True)
+        if not supports_temperature:
+            kwargs.pop("temperature", None)
+            kwargs.pop("top_p", None)
+
         # Merge remaining kwargs into body (temperature, top_p, etc.)
         body.update(kwargs)
 

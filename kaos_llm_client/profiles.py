@@ -361,6 +361,12 @@ class OpenAIModelProfile(ModelProfile):
     supports_response_format: bool = True
     supports_service_tier: bool = True
     supports_audio_output: bool = False
+    # Reasoning models (o3, o4, gpt-5.5, gpt-5-thinking) reject the
+    # ``temperature`` and ``top_p`` request parameters outright with
+    # "temperature is not supported for this model". Standard chat
+    # models accept them. The OpenAI-compatible client strips these
+    # kwargs from the request body when this flag is ``False``.
+    supports_temperature: bool = True
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -416,6 +422,7 @@ OPENAI_REASONING = OpenAIModelProfile(
     default_max_tokens=200_000,
     supports_reasoning_effort=True,
     supports_service_tier=False,
+    supports_temperature=False,
 )
 
 # Azure-hosted OpenAI chat models reject ``max_tokens`` (the legacy
