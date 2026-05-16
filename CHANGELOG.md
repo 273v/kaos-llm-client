@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+## [0.1.0a4] — 2026-05-16
+
+### Fixed
+
+- **Reasoning models no longer receive `temperature` / `top_p`.**
+  When `ProfileMetadata.is_reasoning_model` is True, the client now
+  strips both fields from the outbound request envelope before
+  invoking the provider. Reasoning models reject these parameters
+  with an error from many providers (PA16), so silently dropping
+  them lets the same `RequestProfile` flow through reasoning and
+  non-reasoning endpoints without caller-side branching.
+
+### Added
+
+- **`MODEL_PRICING` extended with six previously-mirrored models.**
+  Pricing entries added for models that were already in the
+  cross-repo `MODEL_REGISTRY` but missing from `cost.py`'s
+  lookup table — so `LlmClient.estimate_cost(...)` no longer
+  raises `KeyError` for them. Provenance and exact pricing
+  values match the upstream provider docs at the date of the
+  commit; see `kaos_llm_client/cost.py` for the per-model
+  entries.
+
+### Documentation
+
+- Fixture provenance README backfilled per audit-03 D9; each
+  fixture under `tests/fixtures/` now has a clear source / date /
+  redaction note.
+
+### Infrastructure
+
+- Dependabot migrated to the uv ecosystem with a 72-hour cooldown
+  matching the rest of the kaos-* org.
+- Public-PR CI workflow hardening, CycloneDX SBOM release asset,
+  CODEOWNERS expansion, OpenSSF Scorecard rollout.
+
+
 ## [0.1.0a3] — 2026-05-11
 
 ### Fixed
