@@ -9,6 +9,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.1.0a5] — 2026-05-20
+
+Work unit WU-E of the [0.1.0 GA plan](https://github.com/273v/kaos-modules/blob/main/docs/plans/2026-05-20-0.1.0-ga-plan.md).
+
+### Fixed
+
+- **#466: `cost_usd=0` for `openai:gpt-5.4-mini` (and every other
+  `provider:model` form).** `lookup_pricing()` now strips the
+  `provider:` prefix internally before matching, so callers passing
+  the canonical `openai:gpt-5.4-mini` / `anthropic:claude-opus-4-7`
+  / `google:gemini-2.5-flash` form resolve to the same entry as the
+  bare model name. Previously the caller was "responsible" for
+  stripping the prefix, which silently produced `None` pricing and
+  `cost_usd=0` on the default SPA model.
+- **Test assertions updated for `kaos-core 0.1.0a12` error contract.**
+  `KaosCoreError.__str__()` now returns the message only; structured
+  fields (`provider`, `fix`, `model`, ...) live in `err.details`.
+  Three unit tests (`test_azure.py`, `test_bedrock.py`,
+  `test_errors.py`) were migrated to assert against
+  `err.details["fix"]` rather than `str(err)`. No library code
+  change — the actionable env-var names are still produced; only
+  the rendering surface moved.
+
+### Added
+
+- **Hot-reloadable pricing overlay.** `kaos_llm_client.cost` now
+  exports `load_pricing_overlay()` + `apply_pricing_overlay()`.
+  Set `KAOS_LLM_PRICING_OVERLAY_PATH` to a JSON file mapping
+  `model -> {"input": float, "output": float, ...}` and the table
+  is merged at module import. Malformed / missing overlays log a
+  WARN and no-op rather than crash. Lets the pricing table catch
+  up with new model launches between releases without a code
+  change.
+- **Regression test `TestRequiredModelPricingForGA`.** Asserts every
+  SPA + bench-harness default model resolves to non-zero input +
+  output cost via the canonical `provider:model` form:
+  `openai:gpt-5.4-mini`, `openai:gpt-5.4-nano`, `openai:gpt-5.4`,
+  `anthropic:claude-opus-4-7`, `anthropic:claude-sonnet-4-6`,
+  `anthropic:claude-haiku-4-5`, `google:gemini-2.5-flash`.
+
+### Changed
+
+- **`kaos-core` floor bumped: `>=0.1.0a1` → `>=0.1.0a12,<0.2`.**
+  Aligns with the rest of the kaos-* DAG ahead of 0.1.0 GA
+  (post-URI-redesign + Capability type).
+- **Anthropic `ANTHROPIC_TOOL_FALLBACK` `default_max_tokens`
+  raised from 8192 to 64000.** Attorney-grade long-form deliverables
+  were truncating mid-output on the prior 2023-era default. Models
+  whose own API caps are lower (Claude 3 = 4K) will be clamped by
+  the provider upstream.
+
+
 ## [0.1.0a4] — 2026-05-16
 
 ### Fixed

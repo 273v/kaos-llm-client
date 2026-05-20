@@ -43,7 +43,7 @@ dependencies = [
   "httpx[http2]>=0.28",
   "pydantic>=2.11.0",
   "pydantic-settings>=2.8.1",
-  "kaos-core>=0.1.0a1",
+  "kaos-core>=0.1.0a12,<0.2",
 ]
 
 # NOTE: the [mcp] extra is not declared at 0.1.0a1 because the underlying
