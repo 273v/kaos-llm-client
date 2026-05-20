@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.13"
 
 [options]
-exclude-newer = "2026-05-17T20:02:52.59956308Z"
+exclude-newer = "2026-05-17T23:11:05.632967233Z"
 exclude-newer-span = "PT72H"
 
 [options.exclude-newer-package]
@@ -421,16 +421,16 @@ wheels = [
 
 [[package]]
 name = "kaos-core"
-version = "0.1.0rc1"
+version = "0.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/7e/56/97682b2cfeaeb1c9806b39b32b702a2dbe1a2695cd0e2c1012e30a4cfa80/kaos_core-0.1.0rc1.tar.gz", hash = "sha256:a84f52ac55d296fa7979d766ff157cc6164764ca42d93e45df78dbf8d53a42ef", size = 197743, upload-time = "2026-05-20T19:53:32.689Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/b7/e60e6d6a05010f77e7535b09528f9efa994d9594abde9b26feecea20f059/kaos_core-0.1.0.tar.gz", hash = "sha256:5535f80661492101caa1fefd536c5f3c6a3d3597c6eb1f505e974907931c6945", size = 197876, upload-time = "2026-05-20T23:04:17.606Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/02/61/ebb1da64a3e0c540ab16bb5e1b2d54adc9bc5366d0ed806f45cf15d0ed47/kaos_core-0.1.0rc1-py3-none-any.whl", hash = "sha256:0a691b6e4c5688368de2e0112138cfa46b3827887df728f19df55bc2abdf44c1", size = 151389, upload-time = "2026-05-20T19:53:30.723Z" },
+    { url = "https://files.pythonhosted.org/packages/44/cf/ffaeccc9320f967b694ecc764ad574d9d2e4ecc04c196dcecf337cca3d7f/kaos_core-0.1.0-py3-none-any.whl", hash = "sha256:1f6ef9862a3ff5136d485289a5c8ff6af30e7006a8ad14508bc0ff4ec3fac391", size = 151339, upload-time = "2026-05-20T23:04:16.199Z" },
 ]
 
 [[package]]
@@ -461,7 +461,7 @@ dev = [
 requires-dist = [
     { name = "azure-identity", marker = "extra == 'azure'", specifier = ">=1.25.3" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.28" },
-    { name = "kaos-core", specifier = ">=0.1.0rc1,<0.2" },
+    { name = "kaos-core", specifier = ">=0.1.0,<0.2" },
     { name = "pydantic", specifier = ">=2.11.0" },
     { name = "pydantic-settings", specifier = ">=2.8.1" },
 ]
