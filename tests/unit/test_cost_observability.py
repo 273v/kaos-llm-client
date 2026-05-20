@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -464,3 +464,168 @@ class TestStreamingCallComplete:
 
         chunks = asyncio.run(run())
         assert any(c.type == "text_delta" for c in chunks)
+
+
+# --- Plan §8 — pricing overlay + provider-prefix strip --------------
+
+
+class TestPricingOverlay:
+    def test_load_missing_file_returns_empty(self) -> None:
+        from kaos_llm_client.cost import load_pricing_overlay
+
+        result = load_pricing_overlay("/nonexistent/path/pricing.json")
+        assert result == {}
+
+    def test_load_malformed_json_returns_empty(self, tmp_path) -> None:
+        from kaos_llm_client.cost import load_pricing_overlay
+
+        bad = tmp_path / "pricing.json"
+        bad.write_text("not valid json")
+        assert load_pricing_overlay(str(bad)) == {}
+
+    def test_load_valid_overlay(self, tmp_path) -> None:
+        from kaos_llm_client.cost import load_pricing_overlay
+
+        valid = tmp_path / "pricing.json"
+        valid.write_text('{"future-model-1": {"input": 0.5, "output": 2.5}}')
+        result = load_pricing_overlay(str(valid))
+        assert result == {"future-model-1": {"input": 0.5, "output": 2.5}}
+
+    def test_load_skips_entries_missing_input_or_output(self, tmp_path) -> None:
+        from kaos_llm_client.cost import load_pricing_overlay
+
+        f = tmp_path / "pricing.json"
+        f.write_text(
+            '{"good": {"input": 1, "output": 2}, '
+            '"bad-no-output": {"input": 1}, '
+            '"bad-not-object": "string"}'
+        )
+        result = load_pricing_overlay(str(f))
+        assert "good" in result
+        assert "bad-no-output" not in result
+        assert "bad-not-object" not in result
+
+    def test_apply_overlay_adds_to_target(self) -> None:
+        from kaos_llm_client.cost import apply_pricing_overlay
+
+        target: dict[str, dict[str, float]] = {}
+        n = apply_pricing_overlay(
+            {"future-model-2": {"input": 0.25, "output": 1.25}},
+            target=target,
+        )
+        assert n == 1
+        assert target["future-model-2"] == {"input": 0.25, "output": 1.25}
+
+    def test_apply_overlay_replaces_existing(self) -> None:
+        from kaos_llm_client.cost import apply_pricing_overlay
+
+        target: dict[str, dict[str, float]] = {"x": {"input": 1.0, "output": 1.0}}
+        apply_pricing_overlay(
+            {"x": {"input": 99.0, "output": 99.0}},
+            target=target,
+        )
+        assert target["x"] == {"input": 99.0, "output": 99.0}
+
+    def test_apply_overlay_none_returns_zero(self) -> None:
+        from kaos_llm_client.cost import apply_pricing_overlay
+
+        # No env var set, no overlay passed → no-op.
+        # (Don't rely on env state; just confirm the None-path returns 0
+        # when the env var isn't set.)
+        if "KAOS_LLM_PRICING_OVERLAY_PATH" not in __import__("os").environ:
+            assert apply_pricing_overlay() == 0
+
+
+class TestProviderPrefixStripInLookup:
+    """Regression coverage for the 2026-05-19 #466 defect.
+
+    Previously ``lookup_pricing("openai:gpt-5.4-mini")`` returned None
+    even when ``gpt-5.4-mini`` was in MODEL_PRICING. The lookup now
+    strips the prefix internally.
+    """
+
+    def test_openai_prefix_resolves_to_bare_key(self) -> None:
+        from kaos_llm_client.cost import lookup_pricing
+
+        bare = lookup_pricing("gpt-5")
+        prefixed = lookup_pricing("openai:gpt-5")
+        assert bare is not None
+        assert prefixed is bare
+
+    def test_anthropic_prefix_resolves(self) -> None:
+        from kaos_llm_client.cost import lookup_pricing
+
+        # claude-sonnet-4-6 — already exists in MODEL_PRICING.
+        if lookup_pricing("claude-sonnet-4-6") is None:
+            return  # entry missing — test would be a tautology
+        bare = lookup_pricing("claude-sonnet-4-6")
+        prefixed = lookup_pricing("anthropic:claude-sonnet-4-6")
+        assert prefixed is bare
+
+    def test_prefix_strip_works_with_prefix_fallback(self) -> None:
+        from kaos_llm_client.cost import lookup_pricing
+
+        # gpt-5-0125 doesn't exist as a key, but gpt-5 does. The
+        # prefixed form should also fall through to gpt-5.
+        gpt5 = lookup_pricing("gpt-5")
+        prefixed_versioned = lookup_pricing("openai:gpt-5-0125")
+        assert prefixed_versioned is gpt5
+
+
+# --- #466 / GA WU-E — SPA + bench harness default models MUST price ---
+
+
+class TestRequiredModelPricingForGA:
+    """The 0.1.0 GA acceptance bar requires every SPA-default and
+    bench-harness-default model to resolve to non-zero input + output
+    cost via the canonical ``provider:model`` form callers actually
+    pass. Issue #466 reported ``cost_usd=0`` for the default SPA model
+    because ``lookup_pricing("openai:gpt-5.4-mini")`` returned ``None``
+    while ``MODEL_PRICING`` had only the bare ``gpt-5.4-mini`` key.
+
+    The fix is two-fold: (1) ensure every required model is in the
+    table, (2) make ``lookup_pricing`` strip the provider prefix.
+    This test asserts both end-to-end.
+    """
+
+    REQUIRED_MODELS: ClassVar[list[str]] = [
+        # OpenAI — SPA + bench defaults
+        "openai:gpt-5.4-mini",
+        "openai:gpt-5.4-nano",
+        "openai:gpt-5.4",
+        # Anthropic — SPA + bench defaults
+        "anthropic:claude-opus-4-7",
+        "anthropic:claude-sonnet-4-6",
+        "anthropic:claude-haiku-4-5",
+        # Google — SPA default
+        "google:gemini-2.5-flash",
+    ]
+
+    def test_every_required_model_resolves_to_nonzero_input_and_output(
+        self,
+    ) -> None:
+        from kaos_llm_client.cost import lookup_pricing
+
+        missing: list[str] = []
+        zero_priced: list[str] = []
+        for model in self.REQUIRED_MODELS:
+            pricing = lookup_pricing(model)
+            if pricing is None:
+                missing.append(model)
+                continue
+            if pricing.get("input", 0) <= 0 or pricing.get("output", 0) <= 0:
+                zero_priced.append(model)
+        assert not missing, f"Missing from MODEL_PRICING: {missing}"
+        assert not zero_priced, (
+            f"Zero/negative pricing for: {zero_priced} (every GA-required model must bill non-zero)"
+        )
+
+    def test_estimate_call_cost_nonzero_for_each_required_model(self) -> None:
+        """Issue #466 end-to-end: feed a realistic usage record through
+        :func:`estimate_call_cost` and confirm USD > 0.
+        """
+        usage = UsageInfo(input_tokens=1_000, output_tokens=500, total_tokens=1_500)
+        for model in self.REQUIRED_MODELS:
+            cost = estimate_call_cost(usage, model)
+            assert cost is not None, f"{model} not in pricing table"
+            assert cost > 0, f"{model} priced at zero — see #466"

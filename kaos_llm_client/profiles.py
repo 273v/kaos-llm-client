@@ -470,9 +470,14 @@ ANTHROPIC_DEFAULT = AnthropicModelProfile(
 
 # Legacy Anthropic profile for pre-4.x models that do not support
 # ``output_config.format``. Kept exported for tests + caller pinning.
-# Claude 3.5/3.7 supported 8K output; Claude 3 supported 4K. We pick
-# 8K as the safe value that works across all 3.x models — callers
-# pinning to 3.x can override per-call.
+# The shipped audience is attorneys producing long-form deliverables
+# (per `kaos-modules/docs/plans/persona-matrix-followups.md` § 9);
+# the 2023-era 8K default truncated tables, multi-document summaries,
+# and clause-by-clause comparisons mid-output and was directly
+# implicated in P0-1 of `2026-05-18-cross-layer-issue-inventory.md`.
+# Floor for any deliverable-emitting call is 64K. Models whose own
+# API caps are lower (Claude 3 = 4K) will be clamped by Anthropic
+# upstream; we send the higher number and the API trims.
 ANTHROPIC_TOOL_FALLBACK = AnthropicModelProfile(
     supports_vision=True,
     supports_thinking=True,
@@ -484,7 +489,7 @@ ANTHROPIC_TOOL_FALLBACK = AnthropicModelProfile(
     thinking_parameter="thinking",
     stream_format="anthropic_sse",
     provider_name="anthropic",
-    default_max_tokens=8_192,
+    default_max_tokens=64_000,
     supports_extended_thinking=True,
 )
 
@@ -687,9 +692,14 @@ def _resolve_anthropic_profile(model: str) -> ModelProfile:
     ):
         return ANTHROPIC_TOOL_FALLBACK  # 8K, tool-based JSON
 
-    # Claude 3.0 / 2.x — 4K output legacy
+    # Claude 3.0 / 2.x — physical API ceiling is 4K on Claude 3,
+    # 8K on Claude 3.5/3.7. We send the org floor (64K) and let
+    # Anthropic clamp upstream. Older models aren't recommended
+    # for the attorney-grade workload (per the model-defaults
+    # sweep — kaos-ui catalog requires `claude >= 4.5`); these
+    # codepaths are only reached if a caller explicitly pins.
     if model.startswith(("claude-3", "claude-2")):
-        return ANTHROPIC_TOOL_FALLBACK.update(default_max_tokens=4_096)
+        return ANTHROPIC_TOOL_FALLBACK
 
     # Unknown claude-* model — default to current-gen defaults
     return ANTHROPIC_DEFAULT

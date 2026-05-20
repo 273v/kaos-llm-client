@@ -103,9 +103,13 @@ def test_missing_endpoint_raises_with_fix() -> None:
     client = AzureOpenAIClient(model="gpt-5.4-mini", settings=settings)
     with pytest.raises(KaosLLMError) as exc:
         _ = client._base_url
+    # kaos-core 0.1.0a12 separated the user-facing message from the
+    # structured ``details`` payload — actionable env-var names live in
+    # ``details["fix"]`` rather than the rendered str().
     msg = str(exc.value)
+    fix = exc.value.details.get("fix", "")
     assert "endpoint" in msg.lower()
-    assert "AZURE_OPENAI_ENDPOINT" in msg
+    assert "AZURE_OPENAI_ENDPOINT" in fix
 
 
 def test_missing_api_key_raises_with_fix() -> None:
@@ -113,8 +117,8 @@ def test_missing_api_key_raises_with_fix() -> None:
     client = AzureOpenAIClient(model="gpt-5.4-mini", settings=settings)
     with pytest.raises(KaosLLMAuthError) as exc:
         client._build_headers()
-    msg = str(exc.value)
-    assert "AZURE_OPENAI_API_KEY" in msg
+    fix = exc.value.details.get("fix", "")
+    assert "AZURE_OPENAI_API_KEY" in fix
 
 
 def test_chat_request_wire_format() -> None:

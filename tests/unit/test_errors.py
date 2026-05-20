@@ -45,8 +45,10 @@ class TestKaosLLMError:
         err = KaosLLMError("test error")
         assert str(err) == "test error"
 
+        # kaos-core 0.1.0a12 separated str(err) (message only) from the
+        # structured ``details`` payload. Extra kwargs land in details.
         err2 = KaosLLMError("test error", detail="extra")
-        assert "extra" in str(err2)
+        assert err2.details["detail"] == "extra"
 
 
 class TestProviderError:

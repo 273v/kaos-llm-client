@@ -96,9 +96,11 @@ def test_missing_api_key_raises_with_actionable_fix() -> None:
     client = BedrockClient(model="openai.gpt-oss-120b", settings=_make_settings(api_key=None))
     with pytest.raises(KaosLLMAuthError) as exc:
         client._build_headers()
-    msg = str(exc.value)
-    assert "KAOS_LLM_BEDROCK_API_KEY" in msg
-    assert "AWS_BEARER_TOKEN_BEDROCK" in msg
+    # kaos-core 0.1.0a12: actionable env-var names live in
+    # ``err.details["fix"]`` rather than str(err).
+    fix = exc.value.details.get("fix", "")
+    assert "KAOS_LLM_BEDROCK_API_KEY" in fix
+    assert "AWS_BEARER_TOKEN_BEDROCK" in fix
 
 
 def test_legacy_aws_bearer_token_env_fallback(monkeypatch) -> None:

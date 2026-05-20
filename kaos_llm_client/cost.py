@@ -32,10 +32,16 @@ doesn't have to guess.
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from kaos_llm_client.types import UsageInfo
+
+logger = logging.getLogger("kaos.llm_client.cost")
 
 
 # STALENESS WARNING: Update this table when adding new models or after provider
@@ -125,6 +131,24 @@ MODEL_PRICING: dict[str, dict[str, float]] = {
 }
 
 
+def _strip_provider_prefix(model: str) -> str:
+    """Return the bare model name with any ``provider:`` prefix removed.
+
+    ``openai:gpt-5.4-mini`` → ``gpt-5.4-mini``. Idempotent.
+
+    Plan §8 (Pricing registry) of
+    ``kaos-modules/docs/plans/2026-05-19-lateral-redesign-capability-layer.md``:
+    previously callers were "responsible" for stripping the prefix,
+    which produced the documented #466 defect where
+    ``lookup_pricing('openai:gpt-5.4-mini')`` returned ``None`` even
+    though ``MODEL_PRICING`` had ``gpt-5.4-mini``. The lookup now
+    strips the prefix internally so callers cannot silently miss.
+    """
+    if ":" in model:
+        return model.split(":", 1)[1]
+    return model
+
+
 def lookup_pricing(
     model: str,
     *,
@@ -137,8 +161,10 @@ def lookup_pricing(
     ``gpt-4.1-mini`` is never confused with ``gpt-4.1``.
 
     Args:
-        model: The bare model name (e.g., ``gpt-5``). The caller is
-            responsible for stripping any ``provider:`` prefix.
+        model: Either the bare model name (e.g., ``gpt-5``) or a
+            ``provider:model`` form (e.g., ``openai:gpt-5.4-mini``).
+            The function strips the provider prefix internally before
+            matching, so callers can pass either form safely.
         pricing_table: Optional override of the default
             :data:`MODEL_PRICING` table. Lets tests pin pricing without
             mutating the module-level dict.
@@ -146,19 +172,27 @@ def lookup_pricing(
     Returns:
         A ``{"input": float, "output": float}`` mapping, or ``None`` when
         the model is not in the table.
+
+    Resolution order:
+        1. Exact match on ``model`` as provided
+        2. Exact match on ``model`` with any ``provider:`` prefix
+           stripped
+        3. Longest-prefix match against the stripped name
+        4. ``None``
     """
     table = pricing_table if pricing_table is not None else MODEL_PRICING
     if model in table:
         return table[model]
+    stripped = _strip_provider_prefix(model)
+    if stripped != model and stripped in table:
+        return table[stripped]
     # Prefix match — sort by descending length so longer prefixes win.
-    # ``ty`` types ``sorted(dict.keys(), key=len)`` as ``list[Sized]``
-    # (it generalises to the protocol consumed by ``key=``); pre-sort
-    # by ``-len(k)`` on a typed local so the element type stays ``str``
-    # for ``str.startswith`` below.
+    # Match against the stripped name only: ``openai:gpt-5.4-mini``
+    # should prefix-match ``gpt-5.4-mini``, not the ``openai:`` portion.
     table_keys: list[str] = list(table.keys())
     table_keys.sort(key=lambda k: -len(k))
     for key in table_keys:
-        if model.startswith(key):
+        if stripped.startswith(key):
             return table[key]
     return None
 
@@ -235,6 +269,119 @@ def estimate_call_cost(
 __all__ = [
     "MODEL_PRICING",
     "PRICING_LAST_UPDATED",
+    "apply_pricing_overlay",
     "estimate_call_cost",
+    "load_pricing_overlay",
     "lookup_pricing",
 ]
+
+
+# Plan §8 — pricing as a hot-reloadable registry.
+#
+# In addition to the baked-in MODEL_PRICING dict, callers can ship an
+# overlay JSON file that adds or overrides entries without a release.
+# This lets the table catch up with model launches between releases.
+#
+# Overlay file format (mirrors MODEL_PRICING shape):
+#
+#   {
+#       "gpt-5.4-nano": {"input": 0.10, "output": 0.40},
+#       "claude-haiku-5": {"input": 0.50, "output": 2.50}
+#   }
+#
+# Resolution: when ``KAOS_LLM_PRICING_OVERLAY_PATH`` is set in the
+# environment, :func:`apply_pricing_overlay` is invoked at module import
+# time to merge the overlay into MODEL_PRICING. Existing keys are
+# replaced; new keys are added. Unknown / malformed file is a WARN log,
+# not a fatal error — production should never crash on a bad overlay.
+_OVERLAY_ENV_VAR = "KAOS_LLM_PRICING_OVERLAY_PATH"
+
+
+def load_pricing_overlay(path: str) -> dict[str, dict[str, float]]:
+    """Parse a pricing overlay JSON file.
+
+    Args:
+        path: Filesystem path to a JSON file mapping model name to a
+            ``{"input": float, "output": float, ...}`` dict.
+
+    Returns:
+        The parsed overlay dict. Empty when the file is missing,
+        unreadable, or malformed.
+    """
+    try:
+        with Path(path).open(encoding="utf-8") as f:
+            raw = json.load(f)
+    except (FileNotFoundError, PermissionError) as exc:
+        logger.warning(
+            "Pricing overlay path %r is not readable (%s); skipping overlay",
+            path,
+            exc,
+        )
+        return {}
+    except json.JSONDecodeError as exc:
+        logger.warning(
+            "Pricing overlay at %r is not valid JSON (%s); skipping overlay",
+            path,
+            exc,
+        )
+        return {}
+    if not isinstance(raw, dict):
+        logger.warning(
+            "Pricing overlay at %r is not a JSON object; got %s",
+            path,
+            type(raw).__name__,
+        )
+        return {}
+    # Validate each entry is a dict with at least input/output floats.
+    validated: dict[str, dict[str, float]] = {}
+    for model, rates in raw.items():
+        if not isinstance(model, str) or not isinstance(rates, dict):
+            continue
+        try:
+            cleaned = {k: float(v) for k, v in rates.items() if isinstance(v, int | float)}
+        except (TypeError, ValueError):
+            continue
+        if "input" not in cleaned or "output" not in cleaned:
+            continue
+        validated[model] = cleaned
+    return validated
+
+
+def apply_pricing_overlay(
+    overlay: dict[str, dict[str, float]] | None = None,
+    *,
+    target: dict[str, dict[str, float]] | None = None,
+) -> int:
+    """Merge an overlay into a target pricing dict.
+
+    Args:
+        overlay: Mapping of model name to rate dict. When ``None``,
+            loads from the path in ``KAOS_LLM_PRICING_OVERLAY_PATH`` if
+            set, else no-op.
+        target: Destination dict. Defaults to :data:`MODEL_PRICING`
+            (mutates module state).
+
+    Returns:
+        Count of entries merged (added or replaced).
+    """
+    if overlay is None:
+        path = os.environ.get(_OVERLAY_ENV_VAR)
+        if not path:
+            return 0
+        overlay = load_pricing_overlay(path)
+    if not overlay:
+        return 0
+    if target is None:
+        target = MODEL_PRICING
+    target.update(overlay)
+    logger.info(
+        "Pricing overlay merged: %d models (added/replaced)",
+        len(overlay),
+    )
+    return len(overlay)
+
+
+# Auto-apply on import when the env var is set. Safe to be no-op when
+# the env var is absent — and safe to call multiple times because dict
+# update is idempotent on identical content.
+apply_pricing_overlay()
