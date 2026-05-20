@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.1.0rc1] — 2026-05-20
+
+### Changed — WU-J of 0.1.0 GA plan
+
+- Release candidate cut per WU-J of the 0.1.0 GA plan. Freezes the
+  public Python API surface ahead of GA. No source changes relative
+  to 0.1.0a5; this release exists to raise the kaos-core runtime pin
+  floor to the rc track and signal API freeze to downstream consumers.
+- Pin floor raised to `kaos-core>=0.1.0rc1,<0.2`. The `<0.2` ceiling
+  protects against legacy `0.2.0a*` lines (e.g. kaos-nlp-transformers)
+  leaking into resolution.
+- `kaos_llm_client/_version.py` bumped to `0.1.0rc1`.
+
+### Verified
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest -m "not live and not network and not slow and not integration" --no-cov -q`
+  (937 passed, 100 deselected)
+
+
 ## [0.1.0a5] — 2026-05-20
 
 Work unit WU-E of the [0.1.0 GA plan](https://github.com/273v/kaos-modules/blob/main/docs/plans/2026-05-20-0.1.0-ga-plan.md).
