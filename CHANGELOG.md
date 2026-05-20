@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.1.0] — 2026-05-20
+
+### Changed — WU-L of 0.1.0 GA plan
+
+- 0.1.0 GA — WU-L of the 0.1.0 GA plan. First stable release of
+  `kaos-llm-client`. The public API is frozen for the 0.1.x line: no
+  breaking changes will land until 0.2.0. Only runtime kaos-* dep is
+  `kaos-core`; pin floor raised from `>=0.1.0rc1,<0.2` to
+  `>=0.1.0,<0.2`. No code changes relative to 0.1.0rc1; this release
+  is the pin-floor + version bump that signals GA to downstream
+  consumers (kaos-content, kaos-llm-core, kaos-agents, kaos-pdf, etc).
+
+### Verified
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest -m "not live and not network and not slow and not integration" --no-cov -q`
+  (937 passed, 100 deselected)
+
+
 ## [0.1.0rc1] — 2026-05-20
 
 ### Changed — WU-J of 0.1.0 GA plan
