@@ -100,6 +100,52 @@ class KaosLLMRetryExhaustedError(KaosLLMTransportError):
             self.__cause__ = last_error
 
 
+class KaosLLMStreamInterruptedError(KaosLLMTransportError):
+    """Streaming response was interrupted after the first chunk.
+
+    B1.3 (broad-reliability roadmap #570): a network failure or
+    provider 5xx that fires AFTER the streaming response has begun
+    cannot be retried transparently — the partial bytes already
+    reached the client. This error carries them so the caller can
+    decide between (a) retry-as-fresh-call (acceptable when no
+    partial text was emitted, e.g. the disconnect happened during
+    initial connection setup), and (b) ship-partial-with-footer
+    (the user has already seen N bytes; tell them honestly that
+    streaming stopped at that point).
+
+    ``partial_text`` carries everything successfully received before
+    the interrupt — the concatenated content payload (NOT the raw
+    SSE wire bytes). When the underlying provider exposes structured
+    deltas, the producer should accumulate the user-visible text and
+    pass it here.
+
+    ``cause`` is the underlying httpx / network exception. Available
+    as ``__cause__`` AND as a typed attribute for callers that
+    inspect by attribute name.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        partial_text: str = "",
+        bytes_received: int = 0,
+        cause: Exception | None = None,
+        **details: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            partial_text=partial_text,
+            bytes_received=bytes_received,
+            **details,
+        )
+        self.partial_text = partial_text
+        self.bytes_received = bytes_received
+        self.cause = cause
+        if cause is not None:
+            self.__cause__ = cause
+
+
 class KaosLLMValidationError(KaosLLMError):
     """Response failed Pydantic validation in the ``pydantic()`` helper.
 

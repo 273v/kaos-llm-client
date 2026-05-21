@@ -35,6 +35,7 @@ from kaos_llm_client.errors import (
     KaosLLMError,
     KaosLLMProviderError,
     KaosLLMRetryExhaustedError,
+    KaosLLMStreamInterruptedError,
     KaosLLMTransportError,
     KaosLLMValidationError,
 )
@@ -144,6 +145,7 @@ __all__ = [
     "KaosLLMProviderError",
     "KaosLLMRetryExhaustedError",
     "KaosLLMSettings",
+    "KaosLLMStreamInterruptedError",
     "KaosLLMTransportError",
     "KaosLLMValidationError",
     "ModelProfile",

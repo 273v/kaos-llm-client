@@ -23,6 +23,7 @@ from kaos_llm_client.errors import (
     KaosLLMAuthError,
     KaosLLMProviderError,
     KaosLLMRetryExhaustedError,
+    KaosLLMStreamInterruptedError,
     KaosLLMTransportError,
 )
 from kaos_llm_client.types import ProviderRequest
@@ -408,33 +409,68 @@ async def parse_sse_stream(
     ``[DONE]`` or whose socket has stalled mid-stream. ``None`` (the
     default) disables the cap; pass the resolved
     ``KaosLLMSettings.stream_max_duration`` from the caller.
+
+    B1.3 (broad-reliability roadmap #570): network failures that fire
+    AFTER the first chunk are surfaced as
+    :class:`KaosLLMStreamInterruptedError` carrying the raw bytes
+    received so far. Pre-B1.3, an httpx ``ReadError`` /
+    ``RemoteProtocolError`` mid-stream surfaced as an opaque
+    ``KaosLLMTransportError`` with no partial-text payload, which let
+    SPA consumers ship a half-message with no recovery signal. The
+    typed error is raised only when ``bytes_received > 0`` so a
+    completely-failed connection still surfaces as the standard
+    transport error.
     """
     t_start = time.monotonic()
     buffer = ""
-    async for chunk in response.aiter_text():
-        if max_duration is not None and (time.monotonic() - t_start) > max_duration:
-            raise KaosLLMTransportError(
-                f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
-                "The provider may have stalled or forgotten to terminate the stream. "
-                "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
-                "RequestOptions(stream_max_duration=...)) if longer streams are expected."
-            )
-        buffer += chunk
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.strip()
+    bytes_received = 0
+    try:
+        async for chunk in response.aiter_text():
+            if max_duration is not None and (time.monotonic() - t_start) > max_duration:
+                raise KaosLLMTransportError(
+                    f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
+                    "The provider may have stalled or forgotten to terminate the stream. "
+                    "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
+                    "RequestOptions(stream_max_duration=...)) if longer streams are expected."
+                )
+            bytes_received += len(chunk)
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
 
-            if not line:
-                continue
-            if line.startswith("data: "):
-                data = line[6:]
-                if data == "[DONE]":
-                    return
-                try:
-                    yield json.loads(data)
-                except json.JSONDecodeError:
-                    logger.debug("Skipping unparseable SSE data: %s", data[:100])
-            # Ignore event:, id:, retry: lines
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        return
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping unparseable SSE data: %s", data[:100])
+                # Ignore event:, id:, retry: lines
+    except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ProtocolError) as exc:
+        # B1.3: mid-stream HTTP / network interruption. Surface a typed
+        # error carrying the bytes received so the caller can decide
+        # between retry-as-fresh-call and ship-partial-with-footer.
+        # ``buffer`` carries the last partial line we couldn't fully
+        # parse; the typed payload doesn't include it (callers track
+        # user-visible text separately via provider deltas), but the
+        # byte count tells them whether anything reached them.
+        if bytes_received == 0:
+            # Pre-first-byte failures are recoverable as a fresh call.
+            # Keep the standard transport-error shape so existing
+            # retry policies still apply.
+            raise KaosLLMTransportError(
+                "Streaming connection failed before any data was received."
+            ) from exc
+        raise KaosLLMStreamInterruptedError(
+            f"Streaming connection interrupted after {bytes_received} bytes",
+            partial_text="",  # transport doesn't know provider-delta text
+            bytes_received=bytes_received,
+            cause=exc,
+        ) from exc
 
 
 def parse_sse_stream_sync(
@@ -445,32 +481,51 @@ def parse_sse_stream_sync(
     """Parse Server-Sent Events from a sync httpx streaming response.
 
     See :func:`parse_sse_stream` for the ``max_duration`` semantics.
+
+    B1.3 (#570): mirrors the async variant's interruption handling —
+    network failures after the first chunk raise
+    :class:`KaosLLMStreamInterruptedError` instead of an opaque
+    transport error.
     """
     t_start = time.monotonic()
     buffer = ""
-    for chunk in response.iter_text():
-        if max_duration is not None and (time.monotonic() - t_start) > max_duration:
-            raise KaosLLMTransportError(
-                f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
-                "The provider may have stalled or forgotten to terminate the stream. "
-                "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
-                "RequestOptions(stream_max_duration=...)) if longer streams are expected."
-            )
-        buffer += chunk
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.strip()
+    bytes_received = 0
+    try:
+        for chunk in response.iter_text():
+            if max_duration is not None and (time.monotonic() - t_start) > max_duration:
+                raise KaosLLMTransportError(
+                    f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
+                    "The provider may have stalled or forgotten to terminate the stream. "
+                    "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
+                    "RequestOptions(stream_max_duration=...)) if longer streams are expected."
+                )
+            bytes_received += len(chunk)
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
 
-            if not line:
-                continue
-            if line.startswith("data: "):
-                data = line[6:]
-                if data == "[DONE]":
-                    return
-                try:
-                    yield json.loads(data)
-                except json.JSONDecodeError:
-                    logger.debug("Skipping unparseable SSE data: %s", data[:100])
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        return
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping unparseable SSE data: %s", data[:100])
+    except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ProtocolError) as exc:
+        if bytes_received == 0:
+            raise KaosLLMTransportError(
+                "Streaming connection failed before any data was received."
+            ) from exc
+        raise KaosLLMStreamInterruptedError(
+            f"Streaming connection interrupted after {bytes_received} bytes",
+            partial_text="",
+            bytes_received=bytes_received,
+            cause=exc,
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
