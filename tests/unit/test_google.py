@@ -9,11 +9,13 @@ from __future__ import annotations
 import pytest
 
 from kaos_llm_client.errors import KaosLLMAuthError
-from kaos_llm_client.providers.google import GoogleClient
+from kaos_llm_client.profiles import GoogleJsonSchemaTransformer
+from kaos_llm_client.providers.google import GoogleClient, _tool_def_to_google
 from kaos_llm_client.settings import KaosLLMSettings
 from kaos_llm_client.types import (
     ProviderRequest,
     ProviderResponse,
+    ToolDefinition,
 )
 
 _VERTEX_BASE_URL = "https://us-central1-aiplatform.googleapis.com"
@@ -268,3 +270,177 @@ class TestVertexBuildRequest:
 
         assert "streamGenerateContent?alt=sse" in req.endpoint
         assert "/v1/projects/p1/locations/us-east1/" in req.endpoint
+
+
+# ---------------------------------------------------------------------------
+# Tool dispatch tests (R0.3 — kaos-llm-client 0.1.1 / reliability roadmap #560)
+#
+# Without the schema transformer applied to tool parameter blocks, Google
+# Gemini's ``generateContent`` returns HTTP 400 on every tool turn whenever a
+# tool declares its parameters with ``$ref``/``$defs`` (the default Pydantic /
+# JSONSchema shape for any nested model) or with ``const``/``default``/``title``
+# keywords (also common). This was the root cause behind both Gemini Pro and
+# Flash being unusable for tool-using legal research in the SPA — confirmed by
+# the worker-honesty audit (kaos-modules/docs/audits/2026-05-21-worker-honesty.md).
+# ---------------------------------------------------------------------------
+
+
+class TestGoogleToolDispatch:
+    """Tests that tool parameter blocks are sanitized for Gemini's strict JSONSchema subset."""
+
+    def test_tool_def_to_google_without_transformer_leaves_schema_untouched(self):
+        """When no transformer is provided, the legacy (raw) shape passes through."""
+        tool = ToolDefinition(
+            name="search",
+            description="Search the corpus.",
+            parameters={
+                "type": "object",
+                "properties": {"q": {"type": "string", "title": "Query"}},
+            },
+        )
+
+        decl = _tool_def_to_google(tool)
+
+        assert decl["name"] == "search"
+        assert decl["description"] == "Search the corpus."
+        # Without a transformer, ``title`` (which Gemini rejects) survives.
+        assert decl["parameters"]["properties"]["q"]["title"] == "Query"
+
+    def test_tool_def_to_google_inlines_refs_and_defs(self):
+        """``$ref`` + ``$defs`` are inlined so Gemini can validate the schema."""
+        tool = ToolDefinition(
+            name="ingest_entity",
+            description="Ingest a structured legal entity.",
+            parameters={
+                "type": "object",
+                "$defs": {
+                    "Address": {
+                        "type": "object",
+                        "title": "Address",
+                        "properties": {
+                            "street": {"type": "string"},
+                            "city": {"type": "string"},
+                        },
+                    }
+                },
+                "properties": {
+                    "name": {"type": "string"},
+                    "address": {"$ref": "#/$defs/Address"},
+                },
+            },
+        )
+
+        decl = _tool_def_to_google(tool, schema_transformer=GoogleJsonSchemaTransformer)
+
+        params = decl["parameters"]
+        # $ref and $defs must be inlined / stripped.
+        assert "$defs" not in params
+        assert "$ref" not in params["properties"]["address"]
+        # The referenced object's structure must be present in-place.
+        address = params["properties"]["address"]
+        assert address["type"] == "object"
+        assert "street" in address["properties"]
+        assert "city" in address["properties"]
+        # ``title`` (Gemini-rejected) must be stripped on both root and nested.
+        assert "title" not in address
+
+    def test_tool_def_to_google_strips_gemini_unsupported_keywords(self):
+        """``title``, ``const``, ``default`` are stripped / rewritten for Gemini."""
+        tool = ToolDefinition(
+            name="set_mode",
+            description="Switch operational mode.",
+            parameters={
+                "type": "object",
+                "title": "SetModeParams",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "const": "active",  # Gemini rejects const; transformer rewrites to enum.
+                        "title": "Mode",
+                        "default": "active",  # Gemini rejects default; transformer strips it.
+                    }
+                },
+            },
+        )
+
+        decl = _tool_def_to_google(tool, schema_transformer=GoogleJsonSchemaTransformer)
+        params = decl["parameters"]
+        mode = params["properties"]["mode"]
+
+        # const -> enum: [value]
+        assert "const" not in mode
+        assert mode.get("enum") == ["active"]
+        # default stripped
+        assert "default" not in mode
+        # title stripped (both root and nested)
+        assert "title" not in mode
+        assert "title" not in params
+
+    def test_build_request_applies_transformer_to_tool_parameters(self):
+        """End-to-end: ``GoogleClient._build_request`` sanitizes tool schemas via the profile."""
+        client = _make_client(model="gemini-2.5-pro")
+        # Sanity-check the profile actually configures the Gemini transformer.
+        assert client.profile.json_schema_transformer is GoogleJsonSchemaTransformer
+
+        tool = ToolDefinition(
+            name="lookup",
+            description="Lookup a record.",
+            parameters={
+                "type": "object",
+                "$defs": {
+                    "Filter": {
+                        "type": "object",
+                        "title": "Filter",
+                        "properties": {"k": {"type": "string", "default": "id"}},
+                    }
+                },
+                "properties": {
+                    "filter": {"$ref": "#/$defs/Filter"},
+                    "limit": {"type": "integer", "default": 10},
+                },
+            },
+        )
+
+        req = client._build_request(
+            [{"role": "user", "content": "find x"}],
+            tools=[tool],
+        )
+
+        assert "tools" in req.body
+        decls = req.body["tools"][0]["functionDeclarations"]
+        assert len(decls) == 1
+        params = decls[0]["parameters"]
+
+        # The transformer must have flowed all the way through.
+        assert "$defs" not in params
+        assert "$ref" not in params["properties"]["filter"]
+        assert "default" not in params["properties"]["limit"]
+        # Nested keywords cleaned too.
+        nested = params["properties"]["filter"]
+        assert "title" not in nested
+        assert "default" not in nested["properties"]["k"]
+
+    def test_build_request_without_tools_omits_tools_block(self):
+        """Tools block must not appear when no tools are passed."""
+        client = _make_client()
+        req = client._build_request([{"role": "user", "content": "hi"}])
+        assert "tools" not in req.body
+
+    def test_build_request_with_non_gemini_profile_skips_transformer(self):
+        """Profiles without a transformer (None) must not crash and must pass schema verbatim."""
+        # We pass schema_transformer=None directly to the helper — this is
+        # the path a profile without ``json_schema_transformer`` would take.
+        tool = ToolDefinition(
+            name="noop",
+            description="No-op tool.",
+            parameters={
+                "type": "object",
+                "title": "NoopParams",  # survives because no transformer
+                "properties": {"x": {"type": "string", "title": "X"}},
+            },
+        )
+
+        decl = _tool_def_to_google(tool, schema_transformer=None)
+        # The raw schema (with ``title``) must survive untouched.
+        assert decl["parameters"]["title"] == "NoopParams"
+        assert decl["parameters"]["properties"]["x"]["title"] == "X"
