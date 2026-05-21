@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.1.1] — 2026-05-21
+
+Reliability roadmap R0.3 — Gemini tool dispatch fix
+(see `kaos-modules/docs/plans/2026-05-21-reliability-roadmap.md`).
+
+### Fixed
+
+- **#560: Google Gemini tool dispatch returned HTTP 400 on every tool turn
+  when the tool's parameters JSONSchema contained `$ref`/`$defs`,
+  `const`, `default`, or `title` keywords.** Both Gemini Pro and Flash were
+  unusable for tool-using legal research in the kaos-ui SPA. Root cause:
+  `_tool_def_to_google` forwarded `ToolDefinition.parameters` verbatim
+  instead of running it through `GoogleJsonSchemaTransformer`, which
+  already inlines `$ref`/`$defs`, rewrites `const → enum: [value]`, and
+  strips `title`, `default`, `format`. The transformer was correctly
+  applied to the structured-output `responseSchema` path but not to the
+  `functionDeclarations` tool path. Fix: thread the profile's
+  `json_schema_transformer` (Gemini-family profiles all set it to
+  `GoogleJsonSchemaTransformer`) into `_tool_def_to_google` and apply
+  it to each tool's parameter block before sending. Confirmed by the
+  reliability-roadmap worker-honesty audit
+  (`kaos-modules/docs/audits/2026-05-21-worker-honesty.md`).
+
+### Added
+
+- `tests/unit/test_google.py::TestGoogleToolDispatch` — six regression
+  tests covering: (a) the legacy (no-transformer) path still passes
+  schemas verbatim; (b) `$ref` / `$defs` inlined; (c) `const`/`title`/
+  `default` stripped/rewritten on root and nested nodes; (d) end-to-end
+  `_build_request` plumbs the profile's transformer through;
+  (e) tools-omitted path unchanged; (f) profile without a transformer
+  still works.
+
+### Verified
+
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest tests/unit/ -q --no-cov` — **943 passed**
+
+
 ## [0.1.0] — 2026-05-20
 
 ### Changed — WU-L of 0.1.0 GA plan
