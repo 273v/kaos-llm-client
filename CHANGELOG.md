@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 
+## [0.1.2] — 2026-05-22
+
+Broad-reliability roadmap B1.3
+(see `kaos-modules/docs/plans/2026-05-22-broad-reliability-adaptability-roadmap.md`).
+
+### Added
+
+- **`KaosLLMStreamInterruptedError`** — new typed exception raised by
+  `parse_sse_stream` / `parse_sse_stream_sync` when the HTTP/network
+  connection drops after the first byte has been received. Carries
+  `partial_text` and `bytes_received` so SPA consumers can choose
+  between (a) ship-partial-with-footer ("_streaming interrupted at
+  N tokens; partial response follows_") and (b) retry-as-fresh-call.
+  Inherits from `KaosLLMTransportError` for backward compatibility
+  with existing `except KaosLLMTransportError` handlers; exposed
+  from the top-level package.
+
+### Fixed
+
+- **#570 B1.3 — mid-stream provider disconnect surfaced as opaque
+  transport error.** Pre-0.1.2, an httpx `ReadError`,
+  `RemoteProtocolError`, or `ProtocolError` mid-stream surfaced as a
+  generic `KaosLLMTransportError` with no partial-text payload. SPA
+  consumers shipped a half-streamed message with no recovery signal
+  — the user saw the assistant cut off mid-word. Now the typed error
+  carries the byte counter + underlying cause so the consumer can
+  render an honest interruption footer instead of silently dropping
+  the partial response. Pre-first-byte failures still surface as the
+  legacy transport error so existing retry policies continue to fire.
+
+### Added
+
+- `tests/unit/test_stream_interrupt.py` — 12 regression tests
+  covering: clean-stream baseline; pre-first-byte vs mid-stream
+  error type distinction; mid-stream `ReadError` + `RemoteProtocolError`
+  paths; byte counter accuracy; sync sibling parity; error shape
+  contract (inherits from `KaosLLMTransportError`, carries
+  `partial_text` / `bytes_received` / `cause`, public export).
+
+### Verified
+
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest tests/unit/ -q --no-cov` — **955 passed**
+
+
 ## [0.1.1] — 2026-05-21
 
 Reliability roadmap R0.3 — Gemini tool dispatch fix
