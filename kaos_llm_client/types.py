@@ -279,6 +279,16 @@ class ProviderResponse(KaosModel):
     stop_reason: str | None = None
     response_id: str | None = None
 
+    # Provider-served model snapshot (plan §Issue 3).
+    # ``model`` carries what we ASKED for. Providers auto-route (e.g.
+    # ``claude-sonnet-4-6`` → an internal versioned snapshot;
+    # ``gpt-5.4-mini`` → a dated rev). ``model_snapshot`` is the
+    # actual served identifier the provider returned. Required for
+    # EU AI Act Article 12 (record-keeping) / Annex III §6 reproducibility:
+    # an auditor 18 months later must be able to identify which exact
+    # model snapshot generated a given response.
+    model_snapshot: str | None = None
+
     # Transport metadata
     status_code: int = 200
     response_headers: dict[str, str] = Field(default_factory=dict)

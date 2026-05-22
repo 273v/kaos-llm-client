@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import email.utils
+import hashlib
 import json
 import random
 import time
@@ -23,11 +24,13 @@ from kaos_llm_client.errors import (
     KaosLLMAuthError,
     KaosLLMProviderError,
     KaosLLMRetryExhaustedError,
+    KaosLLMStreamInterruptedError,
     KaosLLMTransportError,
 )
 from kaos_llm_client.types import ProviderRequest
 
 logger = get_logger("kaos_llm_client.transport")
+egress_logger = get_logger("kaos_llm_client.transport.egress")
 
 
 # ---------------------------------------------------------------------------
@@ -154,6 +157,84 @@ def _retry_after_from_response(response: httpx.Response) -> float | None:
         except ValueError:
             pass
     return parse_retry_after(response.headers.get("retry-after"))
+
+
+# ---------------------------------------------------------------------------
+# Vendor egress audit log (plan §Issue 4)
+# ---------------------------------------------------------------------------
+
+
+def _request_body_digest(body: Any) -> tuple[int, str]:
+    """Compute (bytes, sha256-hex) for an outbound provider request body.
+
+    ``json.dumps`` with sorted keys and a separator-tight encoding gives
+    a stable hash regardless of dict iteration order — auditors who
+    re-hash from a captured cassette get the same digest as production.
+    Non-serialisable values (e.g. bytes inside a multipart body) fall
+    through to ``default=str`` so the digest still represents the call
+    even if it can't be byte-perfect.
+    """
+    try:
+        serialised = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=False
+        )
+    except (TypeError, ValueError):
+        serialised = str(body)
+    encoded = serialised.encode("utf-8", errors="replace")
+    return len(encoded), hashlib.sha256(encoded).hexdigest()
+
+
+def emit_vendor_egress_log(
+    *,
+    provider: str,
+    model: str,
+    body: Any,
+    attempt: int = 0,
+    scrub_patterns: tuple[str, ...] | None = None,
+    scrubbed_chars: int = 0,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Emit one structured ``vendor_egress`` log line per outbound LLM call.
+
+    The plan (``2026-05-22-launch-blocker-top-10.md`` §Issue 4) requires
+    one such line per provider call, recording: provider, model, bytes,
+    request_hash (sha256 of the serialised body), scrub_patterns,
+    scrubbed_chars, and timestamp. The hash + bytes pair lets an
+    auditor diff what was billed vs what left the process without
+    storing the prompt text itself.
+
+    The log line is emitted at INFO level on the
+    ``kaos_llm_client.transport.egress`` logger so operators can route
+    it to a dedicated egress sink (Splunk/Datadog/audit JSONL) without
+    drowning in retry/latency chatter. Failure here is swallowed —
+    audit logging MUST NOT break a real LLM call.
+    """
+    try:
+        size_bytes, request_hash = _request_body_digest(body)
+        merged_extra: dict[str, Any] = {
+            "event": "vendor_egress",
+            "provider": provider,
+            "model": model,
+            "bytes": size_bytes,
+            "request_hash": f"sha256:{request_hash}",
+            "scrub_patterns": list(scrub_patterns or ()),
+            "scrubbed_chars": int(scrubbed_chars),
+            "attempt": attempt,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        if extra:
+            for k, v in extra.items():
+                merged_extra.setdefault(k, v)
+        egress_logger.info(
+            "vendor_egress provider=%s model=%s bytes=%d request_hash=%s",
+            provider,
+            model,
+            size_bytes,
+            f"sha256:{request_hash[:12]}",
+            extra=merged_extra,
+        )
+    except Exception:  # pragma: no cover - defensive
+        egress_logger.debug("vendor_egress log emission failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -408,33 +489,68 @@ async def parse_sse_stream(
     ``[DONE]`` or whose socket has stalled mid-stream. ``None`` (the
     default) disables the cap; pass the resolved
     ``KaosLLMSettings.stream_max_duration`` from the caller.
+
+    B1.3 (broad-reliability roadmap #570): network failures that fire
+    AFTER the first chunk are surfaced as
+    :class:`KaosLLMStreamInterruptedError` carrying the raw bytes
+    received so far. Pre-B1.3, an httpx ``ReadError`` /
+    ``RemoteProtocolError`` mid-stream surfaced as an opaque
+    ``KaosLLMTransportError`` with no partial-text payload, which let
+    SPA consumers ship a half-message with no recovery signal. The
+    typed error is raised only when ``bytes_received > 0`` so a
+    completely-failed connection still surfaces as the standard
+    transport error.
     """
     t_start = time.monotonic()
     buffer = ""
-    async for chunk in response.aiter_text():
-        if max_duration is not None and (time.monotonic() - t_start) > max_duration:
-            raise KaosLLMTransportError(
-                f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
-                "The provider may have stalled or forgotten to terminate the stream. "
-                "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
-                "RequestOptions(stream_max_duration=...)) if longer streams are expected."
-            )
-        buffer += chunk
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.strip()
+    bytes_received = 0
+    try:
+        async for chunk in response.aiter_text():
+            if max_duration is not None and (time.monotonic() - t_start) > max_duration:
+                raise KaosLLMTransportError(
+                    f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
+                    "The provider may have stalled or forgotten to terminate the stream. "
+                    "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
+                    "RequestOptions(stream_max_duration=...)) if longer streams are expected."
+                )
+            bytes_received += len(chunk)
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
 
-            if not line:
-                continue
-            if line.startswith("data: "):
-                data = line[6:]
-                if data == "[DONE]":
-                    return
-                try:
-                    yield json.loads(data)
-                except json.JSONDecodeError:
-                    logger.debug("Skipping unparseable SSE data: %s", data[:100])
-            # Ignore event:, id:, retry: lines
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        return
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping unparseable SSE data: %s", data[:100])
+                # Ignore event:, id:, retry: lines
+    except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ProtocolError) as exc:
+        # B1.3: mid-stream HTTP / network interruption. Surface a typed
+        # error carrying the bytes received so the caller can decide
+        # between retry-as-fresh-call and ship-partial-with-footer.
+        # ``buffer`` carries the last partial line we couldn't fully
+        # parse; the typed payload doesn't include it (callers track
+        # user-visible text separately via provider deltas), but the
+        # byte count tells them whether anything reached them.
+        if bytes_received == 0:
+            # Pre-first-byte failures are recoverable as a fresh call.
+            # Keep the standard transport-error shape so existing
+            # retry policies still apply.
+            raise KaosLLMTransportError(
+                "Streaming connection failed before any data was received."
+            ) from exc
+        raise KaosLLMStreamInterruptedError(
+            f"Streaming connection interrupted after {bytes_received} bytes",
+            partial_text="",  # transport doesn't know provider-delta text
+            bytes_received=bytes_received,
+            cause=exc,
+        ) from exc
 
 
 def parse_sse_stream_sync(
@@ -445,32 +561,51 @@ def parse_sse_stream_sync(
     """Parse Server-Sent Events from a sync httpx streaming response.
 
     See :func:`parse_sse_stream` for the ``max_duration`` semantics.
+
+    B1.3 (#570): mirrors the async variant's interruption handling —
+    network failures after the first chunk raise
+    :class:`KaosLLMStreamInterruptedError` instead of an opaque
+    transport error.
     """
     t_start = time.monotonic()
     buffer = ""
-    for chunk in response.iter_text():
-        if max_duration is not None and (time.monotonic() - t_start) > max_duration:
-            raise KaosLLMTransportError(
-                f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
-                "The provider may have stalled or forgotten to terminate the stream. "
-                "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
-                "RequestOptions(stream_max_duration=...)) if longer streams are expected."
-            )
-        buffer += chunk
-        while "\n" in buffer:
-            line, buffer = buffer.split("\n", 1)
-            line = line.strip()
+    bytes_received = 0
+    try:
+        for chunk in response.iter_text():
+            if max_duration is not None and (time.monotonic() - t_start) > max_duration:
+                raise KaosLLMTransportError(
+                    f"Stream wall-clock exceeded: open for >{max_duration:.1f}s. "
+                    "The provider may have stalled or forgotten to terminate the stream. "
+                    "Increase KAOS_LLM_STREAM_MAX_DURATION (or pass "
+                    "RequestOptions(stream_max_duration=...)) if longer streams are expected."
+                )
+            bytes_received += len(chunk)
+            buffer += chunk
+            while "\n" in buffer:
+                line, buffer = buffer.split("\n", 1)
+                line = line.strip()
 
-            if not line:
-                continue
-            if line.startswith("data: "):
-                data = line[6:]
-                if data == "[DONE]":
-                    return
-                try:
-                    yield json.loads(data)
-                except json.JSONDecodeError:
-                    logger.debug("Skipping unparseable SSE data: %s", data[:100])
+                if not line:
+                    continue
+                if line.startswith("data: "):
+                    data = line[6:]
+                    if data == "[DONE]":
+                        return
+                    try:
+                        yield json.loads(data)
+                    except json.JSONDecodeError:
+                        logger.debug("Skipping unparseable SSE data: %s", data[:100])
+    except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ProtocolError) as exc:
+        if bytes_received == 0:
+            raise KaosLLMTransportError(
+                "Streaming connection failed before any data was received."
+            ) from exc
+        raise KaosLLMStreamInterruptedError(
+            f"Streaming connection interrupted after {bytes_received} bytes",
+            partial_text="",
+            bytes_received=bytes_received,
+            cause=exc,
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -602,6 +737,16 @@ async def execute_with_retry(
     for attempt in range(retry_policy.max_retries + 1):
         success_response: httpx.Response | None = None
         success_latency_ms: float | None = None
+        # Egress audit (Issue 4) — emit one structured ``vendor_egress``
+        # line per outbound attempt. Re-attempts ship the same body, so
+        # they get logged each time; the ``attempt`` field disambiguates.
+        emit_vendor_egress_log(
+            provider=provider,
+            model=request.model,
+            body=request.body,
+            attempt=attempt,
+            extra=base_extra,
+        )
         try:
             t0 = time.monotonic()
             response = await client.request(

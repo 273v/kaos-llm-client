@@ -327,6 +327,13 @@ class ModelProfile:
 
     # Provider metadata
     provider_name: str = ""
+    # Business Associate Agreement availability (HIPAA §164.314(a)(1)).
+    # Defaults to False — safe default for HIPAA-sensitive workloads.
+    # When a tenant policy sets ``hipaa_required=True``, providers with
+    # ``baa_available=False`` are blocked by ``assert_baa_compliance``
+    # so PHI never leaves the tenant boundary through a non-BAA pipe.
+    # See plan ``2026-05-22-launch-blocker-top-10.md`` §Issue 4.
+    baa_available: bool = False
     # Output token budget. Frontier models in 2026 support 64K-200K+ output;
     # 100K is the right default — it lets the model finish a long deliverable
     # and matches what every major provider supports natively (OpenAI gpt-5.x:
@@ -808,6 +815,46 @@ def resolve_profile(provider: str, model: str) -> ModelProfile:
         return resolver(model)
 
     return _PROVIDER_PROFILES.get(provider, OPENAI_COMPATIBLE_DEFAULT)
+
+
+def assert_baa_compliance(
+    profile: ModelProfile,
+    *,
+    hipaa_required: bool,
+    model: str | None = None,
+) -> None:
+    """Raise :class:`KaosLLMProviderPolicyError` if ``hipaa_required`` is
+    True but the resolved provider does not carry a Business Associate
+    Agreement (``profile.baa_available is False``).
+
+    Defaulting ``baa_available`` to False means operators MUST explicitly
+    opt a profile in. The conservative default fails closed — a tenant
+    with HIPAA-protected workloads cannot accidentally send PHI through
+    a no-BAA provider just because the operator forgot to flag it.
+
+    The error includes a remediation hint and an alternative (switch to
+    a BAA-eligible provider). See plan
+    ``2026-05-22-launch-blocker-top-10.md`` §Issue 4.
+    """
+    if not hipaa_required:
+        return
+    if profile.baa_available:
+        return
+    # Import lazily to avoid a circular import at module load time.
+    from kaos_llm_client.errors import KaosLLMProviderPolicyError
+
+    provider = profile.provider_name or "unknown"
+    raise KaosLLMProviderPolicyError(
+        f"Provider {provider!r} is not BAA-eligible but the tenant policy "
+        f"requires HIPAA. Fix: route this workload to a BAA-covered provider "
+        f"(e.g. Azure OpenAI, AWS Bedrock, or an Anthropic/OpenAI enterprise "
+        f"contract with a signed BAA), and mark the corresponding ``ModelProfile`` "
+        f"with ``baa_available=True``. Alternative: lift ``hipaa_required`` for "
+        f"non-PHI workloads (per-tenant policy).",
+        provider=provider,
+        model=model,
+        constraint="hipaa_required",
+    )
 
 
 def infer_provider(model: str) -> str | None:

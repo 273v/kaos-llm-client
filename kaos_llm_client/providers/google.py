@@ -233,11 +233,55 @@ def _parse_tool_response_content(content: Any) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _tool_def_to_google(tool: ToolDefinition) -> dict[str, Any]:
-    """Convert a ``ToolDefinition`` to Google ``functionDeclarations`` format."""
+def _tool_def_to_google(
+    tool: ToolDefinition,
+    *,
+    schema_transformer: type | None = None,
+) -> dict[str, Any]:
+    """Convert a ``ToolDefinition`` to Google ``functionDeclarations`` format.
+
+    0.1.1 (R0.3 — reliability roadmap #560): Google Gemini's
+    ``generateContent`` rejects raw JSONSchema parameter blocks
+    that contain ``$ref``, ``$defs``, ``title``, ``const``,
+    ``default``, or several other keywords (see
+    :class:`GoogleJsonSchemaTransformer` for the full list of
+    quirks). Pre-fix, ``_tool_def_to_google`` passed ``tool.parameters``
+    verbatim — every tool turn returned HTTP 400 from Google and
+    both Gemini Pro and Flash were unusable for tool-using legal
+    research in the SPA. ``GoogleJsonSchemaTransformer`` already
+    existed but was only applied to the structured-output
+    ``responseSchema`` path (see line ~640 of this module). Now we
+    apply the same transformer to tool parameter blocks so Gemini
+    can actually dispatch.
+
+    Args:
+        tool: The :class:`~kaos_llm_client.tools.ToolDefinition` to
+            translate.
+        schema_transformer: Optional transformer class (typically
+            ``profile.json_schema_transformer``) applied to
+            ``tool.parameters`` before forwarding to Google.
+            Defaults to None (legacy behavior) so callers that build
+            tool definitions through profile-aware paths can pass
+            the transformer explicitly. The caller
+            :func:`_build_request` passes the profile's transformer
+            when one is configured (which it is for every
+            Gemini-family model in :data:`PROFILES`).
+    """
+    parameters = tool.parameters
+    if schema_transformer is not None and parameters:
+        try:
+            transformer = schema_transformer(parameters)
+            parameters = transformer.transform()
+        except Exception:  # never let a transform error
+            # take down a real turn; fall back to the raw JSONSchema
+            # and let Google's error surface naturally. Transform
+            # failures here are rare (typically malformed schemas)
+            # and the failure shape on the wire is the same either
+            # way: HTTP 400 with a parameter validation message.
+            parameters = tool.parameters
     decl: dict[str, Any] = {
         "name": tool.name,
-        "parameters": tool.parameters,
+        "parameters": parameters,
     }
     if tool.description is not None:
         decl["description"] = tool.description
@@ -427,8 +471,22 @@ class GoogleClient(BaseProviderClient):
             body["generationConfig"] = generation_config
 
         # Tool definitions
+        # 0.1.1 (R0.3): pass the profile's JSON schema transformer so
+        # tool parameter blocks get sanitized for Gemini's stricter
+        # JSONSchema subset (no $ref/$defs, no const, no title,
+        # no default). Without this, every tool turn returns HTTP 400
+        # and both Gemini Pro and Flash are unusable for tool-using
+        # work in the SPA — confirmed by the worker-honesty audit
+        # 2026-05-21 (see ``kaos-modules/docs/audits/2026-05-21-worker-honesty.md``).
         if tools:
-            body["tools"] = [{"functionDeclarations": [_tool_def_to_google(t) for t in tools]}]
+            transformer = self.profile.json_schema_transformer
+            body["tools"] = [
+                {
+                    "functionDeclarations": [
+                        _tool_def_to_google(t, schema_transformer=transformer) for t in tools
+                    ]
+                }
+            ]
 
         # Tool choice
         if tool_choice is not None:
@@ -529,6 +587,11 @@ class GoogleClient(BaseProviderClient):
             parts=parts,
             usage=usage,
             stop_reason=stop_reason,
+            # Plan §Issue 3 — capture the served snapshot. Google's
+            # Gemini API returns ``modelVersion`` as the resolved
+            # versioned snapshot (e.g. ``gemini-2.5-flash`` →
+            # ``gemini-2.5-flash-001``).
+            model_snapshot=raw.get("modelVersion"),
             request_id=request.request_id,
         )
 

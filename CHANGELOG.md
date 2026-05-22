@@ -6,7 +6,154 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
-## [Unreleased]
+## [0.1.5] — 2026-05-22
+
+Launch-blocker plan §Issue 3 — provider-served model snapshot capture
+(see `kaos-modules/docs/plans/2026-05-22-launch-blocker-top-10.md`).
+
+### Added
+
+- **`ProviderResponse.model_snapshot: str | None`** — every provider
+  parser now captures the resolved versioned snapshot from the
+  response body alongside the requested model. ``model`` carries
+  what we ASKED for; ``model_snapshot`` carries what was SERVED.
+  Required for EU AI Act Article 12 (record-keeping) / Annex III §6
+  reproducibility: an auditor 18 months later must identify which
+  exact snapshot generated a given response.
+- **Anthropic** (`providers/anthropic.py`) — captures
+  ``raw["model"]`` (e.g. ``claude-sonnet-4-6-20260415``).
+- **OpenAI Chat Completions + OpenAI-compatible providers**
+  (`providers/openai_compat.py`) — captures ``raw["model"]``. Same
+  field is consumed by Groq / xAI / Mistral / DeepSeek / OpenRouter
+  via the shared OpenAI-compatible base.
+- **OpenAI Responses API** (`providers/openai_responses.py`) —
+  captures ``raw["model"]``.
+- **Google Gemini** (`providers/google.py`) — captures
+  ``raw["modelVersion"]`` (Google uses a different field name from
+  OpenAI / Anthropic; pinned in test fixture).
+
+### Tests
+
+- **`tests/unit/test_provider_model_snapshot.py`** (7 tests) —
+  pinned field defaults to ``None``, JSON round-trip carries the
+  value, per-provider parser captures the response model (Anthropic
+  / OpenAI Chat / OpenAI Responses / Google), defensive missing-
+  field fallback, Google's modelVersion alias.
+- **`tests/integration/test_provider_model_snapshot_live.py`**
+  (5 live cases) — proves model_snapshot capture against the real
+  OpenAI Chat, OpenAI Responses (o4-mini), Anthropic, and Google
+  APIs + stability-across-calls invariant.
+- **`tests/unit/test_provider_response_audit_fields.py`** (9 tests) —
+  field-shape contract for the audit-trail triple
+  (request_id / response_id / model_snapshot).
+
+
+## [0.1.2] — 2026-05-22
+
+Broad-reliability roadmap B1.3
+(see `kaos-modules/docs/plans/2026-05-22-broad-reliability-adaptability-roadmap.md`).
+
+### Added
+
+- **`KaosLLMStreamInterruptedError`** — new typed exception raised by
+  `parse_sse_stream` / `parse_sse_stream_sync` when the HTTP/network
+  connection drops after the first byte has been received. Carries
+  `partial_text` and `bytes_received` so SPA consumers can choose
+  between (a) ship-partial-with-footer ("_streaming interrupted at
+  N tokens; partial response follows_") and (b) retry-as-fresh-call.
+  Inherits from `KaosLLMTransportError` for backward compatibility
+  with existing `except KaosLLMTransportError` handlers; exposed
+  from the top-level package.
+
+### Fixed
+
+- **#570 B1.3 — mid-stream provider disconnect surfaced as opaque
+  transport error.** Pre-0.1.2, an httpx `ReadError`,
+  `RemoteProtocolError`, or `ProtocolError` mid-stream surfaced as a
+  generic `KaosLLMTransportError` with no partial-text payload. SPA
+  consumers shipped a half-streamed message with no recovery signal
+  — the user saw the assistant cut off mid-word. Now the typed error
+  carries the byte counter + underlying cause so the consumer can
+  render an honest interruption footer instead of silently dropping
+  the partial response. Pre-first-byte failures still surface as the
+  legacy transport error so existing retry policies continue to fire.
+
+### Added
+
+- `tests/unit/test_stream_interrupt.py` — 12 regression tests
+  covering: clean-stream baseline; pre-first-byte vs mid-stream
+  error type distinction; mid-stream `ReadError` + `RemoteProtocolError`
+  paths; byte counter accuracy; sync sibling parity; error shape
+  contract (inherits from `KaosLLMTransportError`, carries
+  `partial_text` / `bytes_received` / `cause`, public export).
+
+### Verified
+
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest tests/unit/ -q --no-cov` — **955 passed**
+
+
+## [0.1.1] — 2026-05-21
+
+Reliability roadmap R0.3 — Gemini tool dispatch fix
+(see `kaos-modules/docs/plans/2026-05-21-reliability-roadmap.md`).
+
+### Fixed
+
+- **#560: Google Gemini tool dispatch returned HTTP 400 on every tool turn
+  when the tool's parameters JSONSchema contained `$ref`/`$defs`,
+  `const`, `default`, or `title` keywords.** Both Gemini Pro and Flash were
+  unusable for tool-using legal research in the kaos-ui SPA. Root cause:
+  `_tool_def_to_google` forwarded `ToolDefinition.parameters` verbatim
+  instead of running it through `GoogleJsonSchemaTransformer`, which
+  already inlines `$ref`/`$defs`, rewrites `const → enum: [value]`, and
+  strips `title`, `default`, `format`. The transformer was correctly
+  applied to the structured-output `responseSchema` path but not to the
+  `functionDeclarations` tool path. Fix: thread the profile's
+  `json_schema_transformer` (Gemini-family profiles all set it to
+  `GoogleJsonSchemaTransformer`) into `_tool_def_to_google` and apply
+  it to each tool's parameter block before sending. Confirmed by the
+  reliability-roadmap worker-honesty audit
+  (`kaos-modules/docs/audits/2026-05-21-worker-honesty.md`).
+
+### Added
+
+- `tests/unit/test_google.py::TestGoogleToolDispatch` — six regression
+  tests covering: (a) the legacy (no-transformer) path still passes
+  schemas verbatim; (b) `$ref` / `$defs` inlined; (c) `const`/`title`/
+  `default` stripped/rewritten on root and nested nodes; (d) end-to-end
+  `_build_request` plumbs the profile's transformer through;
+  (e) tools-omitted path unchanged; (f) profile without a transformer
+  still works.
+
+### Verified
+
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest tests/unit/ -q --no-cov` — **943 passed**
+
+
+## [0.1.0] — 2026-05-20
+
+### Changed — WU-L of 0.1.0 GA plan
+
+- 0.1.0 GA — WU-L of the 0.1.0 GA plan. First stable release of
+  `kaos-llm-client`. The public API is frozen for the 0.1.x line: no
+  breaking changes will land until 0.2.0. Only runtime kaos-* dep is
+  `kaos-core`; pin floor raised from `>=0.1.0rc1,<0.2` to
+  `>=0.1.0,<0.2`. No code changes relative to 0.1.0rc1; this release
+  is the pin-floor + version bump that signals GA to downstream
+  consumers (kaos-content, kaos-llm-core, kaos-agents, kaos-pdf, etc).
+
+### Verified
+- `ruff format --check kaos_llm_client tests`
+- `ruff check kaos_llm_client tests`
+- `ty check kaos_llm_client tests`
+- `pytest -m "not live and not network and not slow and not integration" --no-cov -q`
+  (937 passed, 100 deselected)
 
 
 ## [0.1.0rc1] — 2026-05-20
