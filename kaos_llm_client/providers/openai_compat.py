@@ -290,6 +290,12 @@ class OpenAICompatibleClient(BaseProviderClient):
             usage=usage,
             stop_reason=stop_reason,
             response_id=raw.get("id"),
+            # Plan §Issue 3 — capture the served snapshot. OpenAI (and
+            # OpenAI-compatible providers like Groq/xAI/Mistral that
+            # share this base) returns ``model`` on the response body
+            # as the resolved dated revision
+            # (e.g. ``gpt-5.4-mini`` → ``gpt-5.4-mini-2026-04-30``).
+            model_snapshot=raw.get("model"),
             request_id=request.request_id,
         )
 

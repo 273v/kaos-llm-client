@@ -8,58 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Launch-blocker plan §Issue 4 — per-vendor PII egress audit log + BAA
-flags (see
-`kaos-modules/docs/plans/2026-05-22-launch-blocker-top-10.md`).
+Launch-blocker plan §Issue 3 — provider-served model snapshot capture
+(see `kaos-modules/docs/plans/2026-05-22-launch-blocker-top-10.md`).
 
 ### Added
 
-- **`vendor_egress` structured audit log** — every outbound LLM
-  provider call now emits one INFO-level log record on the
-  ``kaos.llm_client.transport.egress`` channel carrying provider,
-  model, body byte count, sha256 request hash, optional scrub
-  patterns + scrubbed-char count, attempt index, and ISO-8601 UTC
-  timestamp. The hash + bytes pair lets an auditor diff what was
-  billed vs what left the process without retaining prompt text.
-  Implemented as ``transport.emit_vendor_egress_log`` and invoked
-  per-attempt inside ``execute_with_retry`` so retries log
-  individually with ``attempt`` disambiguating them. Failures are
-  swallowed at the call site — audit logging is best-effort and
-  MUST NOT break a real LLM call.
-- **`ModelProfile.baa_available: bool = False`** — every provider
-  profile carries a Business Associate Agreement-eligibility flag.
-  Defaults to `False` so operators must explicitly opt a profile in
-  based on a real signed contract — defaulting to `True` would
-  silently allow PHI through providers that may not actually be
-  BAA-covered on a given tenant contract.
-- **`profiles.assert_baa_compliance(profile, *, hipaa_required,
-  model=None)`** — convenience helper. Raises
-  ``KaosLLMProviderPolicyError`` when ``hipaa_required=True`` but
-  ``profile.baa_available is False``. The error carries
-  ``provider``, ``model``, ``constraint="hipaa_required"`` and a
-  remediation hint (route to Azure OpenAI / AWS Bedrock / signed
-  Anthropic-or-OpenAI enterprise contract).
-- **`errors.KaosLLMProviderPolicyError`** — new typed exception for
-  tenant-policy violations (currently the BAA constraint; future
-  constraints — data residency, allowed-providers allowlist,
-  rate-budget ceiling — share this base class).
+- **`ProviderResponse.model_snapshot: str | None`** — every provider
+  parser now captures the resolved versioned snapshot from the
+  response body alongside the requested model. ``model`` carries
+  what we ASKED for; ``model_snapshot`` carries what was SERVED.
+  Required for EU AI Act Article 12 (record-keeping) / Annex III §6
+  reproducibility: an auditor 18 months later must identify which
+  exact snapshot generated a given response.
+- **Anthropic** (`providers/anthropic.py`) — captures
+  ``raw["model"]`` (e.g. ``claude-sonnet-4-6-20260415``).
+- **OpenAI Chat Completions + OpenAI-compatible providers**
+  (`providers/openai_compat.py`) — captures ``raw["model"]``. Same
+  field is consumed by Groq / xAI / Mistral / DeepSeek / OpenRouter
+  via the shared OpenAI-compatible base.
+- **OpenAI Responses API** (`providers/openai_responses.py`) —
+  captures ``raw["model"]``.
+- **Google Gemini** (`providers/google.py`) — captures
+  ``raw["modelVersion"]`` (Google uses a different field name from
+  OpenAI / Anthropic; pinned in test fixture).
 
 ### Tests
 
-- **`tests/unit/test_egress_logger.py`** (7 tests) — body-digest
-  stability across dict order, content-change sensitivity, UTF-8
-  byte counting, non-serialisable fallback, full structured-extras
-  emission, scrub-metadata threading, and the swallowed-error
-  invariant.
-- **`tests/unit/test_provider_baa_flags.py`** (6 tests) — default
-  `baa_available=False` across every shipping provider, helper
-  no-ops when `hipaa_required=False`, helper passes when operator
-  has opted in, helper raises on the conservative default with
-  actionable remediation, flag round-trips through
-  ``ModelProfile.update``, helper emits `'unknown'` provider name
-  when a bare profile slips through.
-
-Total: 13 new tests, 968 unit tests passing.
+- **`tests/unit/test_provider_model_snapshot.py`** (7 tests) —
+  pinned field defaults to ``None``, JSON round-trip carries the
+  value, per-provider parser captures the response model (Anthropic
+  / OpenAI Chat / OpenAI Responses / Google), defensive missing-
+  field fallback, Google's modelVersion alias.
+- **`tests/integration/test_provider_model_snapshot_live.py`**
+  (5 live cases) — proves model_snapshot capture against the real
+  OpenAI Chat, OpenAI Responses (o4-mini), Anthropic, and Google
+  APIs + stability-across-calls invariant.
+- **`tests/unit/test_provider_response_audit_fields.py`** (9 tests) —
+  field-shape contract for the audit-trail triple
+  (request_id / response_id / model_snapshot).
 
 
 ## [0.1.2] — 2026-05-22
