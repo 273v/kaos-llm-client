@@ -9,17 +9,16 @@ Thin, provider-native LLM client for the Kelvin Agentic OS — direct model call
 ## Install
 
 ```bash
-uv add kaos-llm-client
+uv add "kaos-llm-client>=0.1.0"
 # or
-pip install kaos-llm-client
+pip install "kaos-llm-client>=0.1.0"
 
 # Azure OpenAI with Microsoft Entra ID / DefaultAzureCredential
 # (api-key auth works without this extra — only needed for AAD).
-uv add 'kaos-llm-client[azure]'
+uv add 'kaos-llm-client[azure]>=0.1.0'
 
-# MCP server runtime (requires kaos-mcp; deferred to 0.1.0a2 — install
-# kaos-mcp manually from source until then).
-# uv add 'kaos-llm-client[mcp]'
+# MCP server runtime (pulls in kaos-mcp)
+uv add 'kaos-llm-client[mcp]>=0.1.0'
 ```
 
 Set at least one provider API key (`KAOS_LLM_OPENAI_API_KEY`, `KAOS_LLM_ANTHROPIC_API_KEY`, `KAOS_LLM_GOOGLE_API_KEY`, …). Standard names (`OPENAI_API_KEY`, etc.) are accepted as fallbacks. For Azure with AAD, see the [Quick start](#azure-openai-with-microsoft-entra-id-aad) below.
@@ -138,7 +137,7 @@ create_client("bedrock:openai.gpt-oss-120b")  # AWS Bedrock
 |---|---|
 | Python | 3.13, 3.14 |
 | OS | Linux, macOS, Windows |
-| Maturity | Alpha (`Development Status :: 3 - Alpha`); SemVer, pre-1.0 minor bumps may break public API |
+| Maturity | 0.1.0 GA; SemVer, pre-1.0 minor bumps may break public API |
 | Tests | 924 unit + 5 live integration |
 | Type checker | `ty` (clean) |
 
@@ -194,6 +193,15 @@ Exposes `kaos-llm-chat`, `kaos-llm-json`, and `kaos-llm-embed` MCP tools.
 > configured LLM credits. The server emits a startup warning when
 > `--host` is not loopback. See `kaos_llm_client/serve.py` module
 > docstring for the full guidance.
+
+## Documentation
+
+Per-package reference: see the in-tree docstrings and the
+[CHANGELOG.md](CHANGELOG.md).
+
+Cross-cutting KAOS guides (agentic patterns, persona presets, settings
+policy, citations, MCP data flow, migration to 0.1.0 GA) live in
+[`kaos-modules/docs/guides/`](https://github.com/273v/kaos-modules/tree/main/docs/guides).
 
 ## Companion packages
 
