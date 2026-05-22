@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import email.utils
+import hashlib
 import json
 import random
 import time
@@ -29,6 +30,7 @@ from kaos_llm_client.errors import (
 from kaos_llm_client.types import ProviderRequest
 
 logger = get_logger("kaos_llm_client.transport")
+egress_logger = get_logger("kaos_llm_client.transport.egress")
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +157,84 @@ def _retry_after_from_response(response: httpx.Response) -> float | None:
         except ValueError:
             pass
     return parse_retry_after(response.headers.get("retry-after"))
+
+
+# ---------------------------------------------------------------------------
+# Vendor egress audit log (plan §Issue 4)
+# ---------------------------------------------------------------------------
+
+
+def _request_body_digest(body: Any) -> tuple[int, str]:
+    """Compute (bytes, sha256-hex) for an outbound provider request body.
+
+    ``json.dumps`` with sorted keys and a separator-tight encoding gives
+    a stable hash regardless of dict iteration order — auditors who
+    re-hash from a captured cassette get the same digest as production.
+    Non-serialisable values (e.g. bytes inside a multipart body) fall
+    through to ``default=str`` so the digest still represents the call
+    even if it can't be byte-perfect.
+    """
+    try:
+        serialised = json.dumps(
+            body, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=False
+        )
+    except (TypeError, ValueError):
+        serialised = str(body)
+    encoded = serialised.encode("utf-8", errors="replace")
+    return len(encoded), hashlib.sha256(encoded).hexdigest()
+
+
+def emit_vendor_egress_log(
+    *,
+    provider: str,
+    model: str,
+    body: Any,
+    attempt: int = 0,
+    scrub_patterns: tuple[str, ...] | None = None,
+    scrubbed_chars: int = 0,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """Emit one structured ``vendor_egress`` log line per outbound LLM call.
+
+    The plan (``2026-05-22-launch-blocker-top-10.md`` §Issue 4) requires
+    one such line per provider call, recording: provider, model, bytes,
+    request_hash (sha256 of the serialised body), scrub_patterns,
+    scrubbed_chars, and timestamp. The hash + bytes pair lets an
+    auditor diff what was billed vs what left the process without
+    storing the prompt text itself.
+
+    The log line is emitted at INFO level on the
+    ``kaos_llm_client.transport.egress`` logger so operators can route
+    it to a dedicated egress sink (Splunk/Datadog/audit JSONL) without
+    drowning in retry/latency chatter. Failure here is swallowed —
+    audit logging MUST NOT break a real LLM call.
+    """
+    try:
+        size_bytes, request_hash = _request_body_digest(body)
+        merged_extra: dict[str, Any] = {
+            "event": "vendor_egress",
+            "provider": provider,
+            "model": model,
+            "bytes": size_bytes,
+            "request_hash": f"sha256:{request_hash}",
+            "scrub_patterns": list(scrub_patterns or ()),
+            "scrubbed_chars": int(scrubbed_chars),
+            "attempt": attempt,
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        if extra:
+            for k, v in extra.items():
+                merged_extra.setdefault(k, v)
+        egress_logger.info(
+            "vendor_egress provider=%s model=%s bytes=%d request_hash=%s",
+            provider,
+            model,
+            size_bytes,
+            f"sha256:{request_hash[:12]}",
+            extra=merged_extra,
+        )
+    except Exception:  # pragma: no cover - defensive
+        egress_logger.debug("vendor_egress log emission failed", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
@@ -657,6 +737,16 @@ async def execute_with_retry(
     for attempt in range(retry_policy.max_retries + 1):
         success_response: httpx.Response | None = None
         success_latency_ms: float | None = None
+        # Egress audit (Issue 4) — emit one structured ``vendor_egress``
+        # line per outbound attempt. Re-attempts ship the same body, so
+        # they get logged each time; the ``attempt`` field disambiguates.
+        emit_vendor_egress_log(
+            provider=provider,
+            model=request.model,
+            body=request.body,
+            attempt=attempt,
+            extra=base_extra,
+        )
         try:
             t0 = time.monotonic()
             response = await client.request(
