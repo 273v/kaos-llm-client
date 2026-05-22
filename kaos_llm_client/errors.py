@@ -151,3 +151,33 @@ class KaosLLMValidationError(KaosLLMError):
 
     Carries the raw text and validation errors in details.
     """
+
+
+class KaosLLMProviderPolicyError(KaosLLMError):
+    """Tenant-policy violation — the requested provider does not satisfy a
+    declared tenant compliance constraint (e.g. ``hipaa_required=True``
+    against a non-BAA provider).
+
+    Carries ``provider``, ``model``, and the unmet constraint name so
+    callers can surface a remediation hint without re-deriving it.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+        constraint: str | None = None,
+        **details: Any,
+    ) -> None:
+        super().__init__(
+            message,
+            provider=provider,
+            model=model,
+            constraint=constraint,
+            **details,
+        )
+        self.provider = provider
+        self.model = model
+        self.constraint = constraint

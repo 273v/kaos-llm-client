@@ -8,6 +8,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Launch-blocker plan §Issue 4 — per-vendor PII egress audit log + BAA
+flags (see
+`kaos-modules/docs/plans/2026-05-22-launch-blocker-top-10.md`).
+
+### Added
+
+- **`vendor_egress` structured audit log** — every outbound LLM
+  provider call now emits one INFO-level log record on the
+  ``kaos.llm_client.transport.egress`` channel carrying provider,
+  model, body byte count, sha256 request hash, optional scrub
+  patterns + scrubbed-char count, attempt index, and ISO-8601 UTC
+  timestamp. The hash + bytes pair lets an auditor diff what was
+  billed vs what left the process without retaining prompt text.
+  Implemented as ``transport.emit_vendor_egress_log`` and invoked
+  per-attempt inside ``execute_with_retry`` so retries log
+  individually with ``attempt`` disambiguating them. Failures are
+  swallowed at the call site — audit logging is best-effort and
+  MUST NOT break a real LLM call.
+- **`ModelProfile.baa_available: bool = False`** — every provider
+  profile carries a Business Associate Agreement-eligibility flag.
+  Defaults to `False` so operators must explicitly opt a profile in
+  based on a real signed contract — defaulting to `True` would
+  silently allow PHI through providers that may not actually be
+  BAA-covered on a given tenant contract.
+- **`profiles.assert_baa_compliance(profile, *, hipaa_required,
+  model=None)`** — convenience helper. Raises
+  ``KaosLLMProviderPolicyError`` when ``hipaa_required=True`` but
+  ``profile.baa_available is False``. The error carries
+  ``provider``, ``model``, ``constraint="hipaa_required"`` and a
+  remediation hint (route to Azure OpenAI / AWS Bedrock / signed
+  Anthropic-or-OpenAI enterprise contract).
+- **`errors.KaosLLMProviderPolicyError`** — new typed exception for
+  tenant-policy violations (currently the BAA constraint; future
+  constraints — data residency, allowed-providers allowlist,
+  rate-budget ceiling — share this base class).
+
+### Tests
+
+- **`tests/unit/test_egress_logger.py`** (7 tests) — body-digest
+  stability across dict order, content-change sensitivity, UTF-8
+  byte counting, non-serialisable fallback, full structured-extras
+  emission, scrub-metadata threading, and the swallowed-error
+  invariant.
+- **`tests/unit/test_provider_baa_flags.py`** (6 tests) — default
+  `baa_available=False` across every shipping provider, helper
+  no-ops when `hipaa_required=False`, helper passes when operator
+  has opted in, helper raises on the conservative default with
+  actionable remediation, flag round-trips through
+  ``ModelProfile.update``, helper emits `'unknown'` provider name
+  when a bare profile slips through.
+
+Total: 13 new tests, 968 unit tests passing.
+
 
 ## [0.1.2] — 2026-05-22
 
