@@ -44,7 +44,7 @@ from kaos_llm_client.types import UsageInfo
 # The minimum set of models that MUST have pricing entries today.
 # Pinned against the kaos-modules CLAUDE.md "Always use the latest
 # model families" guidance + the test_live.py integration matrix
-# (OpenAI, Anthropic, Google × 1 cheap each, plus the SPA default).
+# (OpenAI, Anthropic, Google x 1 cheap each, plus the SPA default).
 REQUIRED_MODELS: tuple[tuple[str, str], ...] = (
     # (provider_prefixed_id, bare_model_name)
     ("openai:gpt-5.4-mini", "gpt-5.4-mini"),  # SPA default — #466 root cause
