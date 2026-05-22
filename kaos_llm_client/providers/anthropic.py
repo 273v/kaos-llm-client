@@ -594,6 +594,11 @@ class AnthropicClient(BaseProviderClient):
             usage=usage,
             stop_reason=raw.get("stop_reason"),
             response_id=raw.get("id"),
+            # Plan §Issue 3 — capture the served snapshot. Anthropic's
+            # Messages API returns ``model`` as the resolved versioned
+            # snapshot (e.g. requesting ``claude-sonnet-4-6`` may return
+            # ``claude-sonnet-4-6-20260415``).
+            model_snapshot=raw.get("model"),
             request_id=request.request_id,
         )
 

@@ -587,6 +587,11 @@ class GoogleClient(BaseProviderClient):
             parts=parts,
             usage=usage,
             stop_reason=stop_reason,
+            # Plan §Issue 3 — capture the served snapshot. Google's
+            # Gemini API returns ``modelVersion`` as the resolved
+            # versioned snapshot (e.g. ``gemini-2.5-flash`` →
+            # ``gemini-2.5-flash-001``).
+            model_snapshot=raw.get("modelVersion"),
             request_id=request.request_id,
         )
 

@@ -285,6 +285,9 @@ class OpenAIResponsesClient(BaseProviderClient):
             usage=usage,
             stop_reason=stop_reason,
             response_id=raw.get("id"),
+            # Plan §Issue 3 — capture the served snapshot. OpenAI's
+            # Responses API echoes the resolved model in ``model``.
+            model_snapshot=raw.get("model"),
             request_id=request.request_id,
         )
 
