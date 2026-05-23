@@ -183,7 +183,10 @@ kaos-llm-serve --http --port 8000                             # streamable HTTP
 kaos-llm-serve --model openai:gpt-5 --http --debug            # default model + debug logging
 ```
 
-Exposes `kaos-llm-chat`, `kaos-llm-json`, and `kaos-llm-embed` MCP tools.
+Exposes 7 MCP tools: `kaos-llm-chat`, `kaos-llm-json`, `kaos-llm-embed`,
+`kaos-llm-tools`, `kaos-llm-pydantic`, `kaos-llm-provider-check`, and
+`kaos-llm-cost-estimate`. Pinned in
+`tests/unit/test_tools.py:541-592`.
 
 > **Security**: the HTTP transport has no built-in authentication or rate
 > limiting. The default `--host 127.0.0.1` binds to loopback, which is
