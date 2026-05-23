@@ -5,7 +5,27 @@ All notable changes to `kaos-llm-client` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-
+
+## [Unreleased]
+
+### Documentation
+
+- **audit-04 README MCP tool list drift.** README "MCP Server"
+  section enumerated only 3 tools (`kaos-llm-chat`, `kaos-llm-json`,
+  `kaos-llm-embed`) but the actual registration is 7 — pinned by
+  `tests/unit/test_tools.py:541-592`. Updated wording lists all 7
+  with a pointer to the pinning test. Fleet docs
+  (`kaos-modules/docs/getting-started.md:131`) already had the
+  correct count. Doc-only fix; no public API or behavior change.
+
+### Fixed (hygiene)
+
+- **CHANGELOG.md stray SOH control character.** Removed a stray
+  `0x01` byte at the start of line 8 that confused diff tools and
+  text editors. Cosmetic-only; no semantic change to recorded
+  release notes.
+
+
 ## [0.1.5] — 2026-05-22
 
 Launch-blocker plan §Issue 3 — provider-served model snapshot capture
