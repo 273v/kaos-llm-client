@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Declared `[mcp]` optional-dependency (`kaos-mcp>=0.1.0,<0.2`). The
+  `kaos-llm-serve` console script and the README install hint already
+  advertised this install path, but the extra itself was not declared
+  because `kaos-mcp` was not on PyPI when 0.1.0a1 shipped. Closes
+  audit-04/kaos-llm-client.md F-001.
+
+### Changed
+
+- `kaos-llm-serve` error message when `kaos-mcp` is missing now cites
+  the canonical install hint (`pip install kaos-llm-client[mcp]`)
+  rather than the bare package name, so it matches the declared
+  optional-dependency entry and the README's install command.
+
 ### Documentation
 
 - **audit-04 README MCP tool list drift.** README "MCP Server"
@@ -24,6 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `0x01` byte at the start of line 8 that confused diff tools and
   text editors. Cosmetic-only; no semantic change to recorded
   release notes.
+
+### Tests
+
+- Test `tests/unit/test_serve_install_contract.py` pins the install
+  contract: `kaos-llm-serve` exits 1 with `[mcp]` and
+  `kaos-llm-client[mcp]` in stderr when `kaos-mcp` is unavailable.
 
 
 ## [0.1.5] — 2026-05-22

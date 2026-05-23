@@ -62,15 +62,13 @@ def main(argv: list[str] | None = None) -> None:
     try:
         from kaos_core import KaosRuntime
 
-        # kaos_mcp is an optional companion package. The import is
-        # intentionally inside try/except so the package works without it;
-        # ty's static resolver can't see the runtime guard so we suppress.
-        # The [mcp] extra is currently stripped (re-added at 0.1.0a2 once
-        # kaos-mcp publishes to PyPI).
+        # kaos-mcp is the [mcp] optional dep; absent from the base
+        # install and from `uv sync --group dev`, so ty cannot resolve
+        # it at check time. The try/except handles the import failure.
         from kaos_mcp import KaosMCPServer, KaosMCPSettings  # ty: ignore[unresolved-import]
     except ImportError:
         print(
-            "Error: MCP server requires kaos-mcp.\nInstall with: pip install kaos-mcp",
+            "Error: MCP server requires kaos-mcp.\nInstall with: pip install kaos-llm-client[mcp]",
             file=sys.stderr,
         )
         sys.exit(1)
