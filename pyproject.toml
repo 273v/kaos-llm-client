@@ -46,11 +46,6 @@ dependencies = [
   "kaos-core>=0.1.0,<0.2",
 ]
 
-# NOTE: the [mcp] extra is not declared at 0.1.0a1 because the underlying
-# kaos-mcp package is not yet published to PyPI. ``uv lock`` is strict and
-# refuses to resolve any declared extra whose package is not resolvable.
-# The extra will be re-added in 0.1.0a2 once kaos-mcp ships. Until then,
-# users wanting the MCP server can install kaos-mcp manually from source.
 [project.optional-dependencies]
 # Microsoft Entra ID / Azure AD authentication for Azure OpenAI.
 # Pulls in Microsoft's official `azure-identity` SDK (MIT-licensed,
@@ -68,6 +63,12 @@ dependencies = [
 # shared-cache decryption — plus msal, msal-extensions, requests).
 azure = [
   "azure-identity>=1.25.3",
+]
+# MCP server — required by the `kaos-llm-serve` console script
+# (see `kaos_llm_client.serve`). Install with
+# `pip install kaos-llm-client[mcp]` to run the LLM-client MCP server.
+mcp = [
+  "kaos-mcp>=0.1.0,<0.2",
 ]
 
 [project.scripts]
