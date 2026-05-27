@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.1.8] — 2026-05-27
+
+Bug-fix release. The cached `httpx.AsyncClient` on `BaseProviderClient`
+is now keyed by event loop, eliminating two failure modes that the
+historical single-slot cache produced:
+
+1. **Stale loop**: `chat()` → `run_sync` → `asyncio.run` creates a
+   loop, runs once, closes it. The cached client was bound to the
+   closed loop; the next `chat()` from the same thread raised
+   `RuntimeError: Event loop is closed`. Sync-wrapper-from-threadpool
+   was a documented pattern that broke on the second call.
+2. **Cross-thread**: a `ThreadPoolExecutor` with multiple workers and
+   a shared provider let two threads race on the cache. The loser got
+   a client bound to the winner's loop and httpx raised on the
+   cross-loop socket.
+
+### Fixed
+
+- `BaseProviderClient._async_client` cache replaced with a per-loop
+  `dict[int, _LoopClient]` keyed by `id(loop)`. Each running loop gets
+  its own `httpx.AsyncClient`; closed-loop entries are reaped on next
+  access. The user-facing entry points (`chat()`, `chat_async()`,
+  `request()`, `request_async()`, etc.) are unchanged.
+- `close()` and `aclose()` updated to honour per-loop semantics. The
+  sync `close()` no longer attempts cross-loop `aclose()` calls (which
+  themselves raced); `aclose()` closes entries belonging to the current
+  loop and drops the rest (those loops' owners are responsible for
+  their own teardown).
+
+### Compatibility
+
+- The `client._async_client = httpx.AsyncClient(transport=mock_transport)`
+  test-injection pattern used by ~30 unit tests is preserved via a
+  property + sync-time injection slot. No test changes required for
+  consumers that follow that pattern.
+- No public API change. `_async_client` and `_async_clients` are both
+  underscore-prefixed and have never been part of the documented public
+  surface.
+
+### Tests
+
+- Three regression tests in
+  `tests/unit/test_base_coverage.py::TestAsyncClientLoopAffinity`:
+  - `test_async_client_rebuilds_after_loop_closes` — same-thread
+    `asyncio.run` boundaries
+  - `test_chat_sync_survives_threadpool_reuse` — single-worker
+    `ThreadPoolExecutor` reuse (the original repro)
+  - `test_concurrent_threads_get_distinct_async_clients` — multi-thread
+    cross-loop case
+
+
 ## [0.1.6] — 2026-05-23
 
 audit-04 remediation bundle (Family A `[mcp]` extra + Family D

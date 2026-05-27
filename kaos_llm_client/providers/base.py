@@ -7,6 +7,7 @@ response parsing, and auth header injection.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
@@ -58,6 +59,21 @@ from kaos_llm_client.types import (
 logger = get_logger("kaos_llm_client.providers.base")
 
 T = TypeVar("T")
+
+
+class _LoopClient:
+    """Pair of (event-loop, httpx.AsyncClient) cached together so the
+    AsyncClient is only ever returned to callers running on the loop it
+    was bound to. Held by ``BaseProviderClient._async_clients`` keyed by
+    ``id(loop)``. Cheap dataclass, but defined as a class because mypy /
+    ty handle ``__slots__`` better here than a TypedDict.
+    """
+
+    __slots__ = ("client", "loop")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, client: httpx.AsyncClient) -> None:
+        self.loop = loop
+        self.client = client
 
 
 class BaseProviderClient(ABC):
@@ -127,9 +143,37 @@ class BaseProviderClient(ABC):
         else:
             self._cache = NullCache()
 
-        # httpx clients (lazy init)
+        # httpx clients (lazy init).
+        #
+        # The sync client is loop-agnostic; one instance is fine.
         self._sync_client: httpx.Client | None = None
-        self._async_client: httpx.AsyncClient | None = None
+        # The async client is keyed BY LOOP. ``httpx.AsyncClient`` binds to
+        # the loop that was current when it was opened, and the binding is
+        # sticky: once the loop closes or you switch threads (each thread
+        # gets its own asyncio loop), the cached client is dead on that
+        # loop. The historical single-slot cache produced two failure modes:
+        #
+        # 1. Stale: ``chat()`` → ``run_sync`` → ``asyncio.run`` creates a
+        #    loop, runs once, closes it. Cached client is now bound to a
+        #    closed loop; the next ``chat()`` from the same thread raises
+        #    ``RuntimeError: Event loop is closed``.
+        # 2. Cross-thread: a ThreadPoolExecutor with multiple workers and
+        #    a shared provider lets two threads race on the cache. The
+        #    loser gets a client bound to the winner's loop and tries to
+        #    use it from its own loop — httpx raises on the cross-loop
+        #    socket.
+        #
+        # The per-loop dict eliminates both. Each loop gets its own
+        # client; closed loops get their entries reaped on next access.
+        # Lookup is by ``id(loop)`` because ``asyncio.AbstractEventLoop``
+        # is not hashable in all implementations and is not weak-refable.
+        self._async_clients: dict[int, _LoopClient] = {}
+        # Test-injection slot. The historical pattern
+        # ``client._async_client = httpx.AsyncClient(transport=mock)`` runs
+        # from sync test setup with no loop. We stash the assignment here
+        # and the runtime path adopts it for whichever loop first calls
+        # ``_get_async_client``. See the property setter for details.
+        self._injected_async_client: httpx.AsyncClient | None = None
 
         # Per-instance metrics — incremented on every cache hit/miss in
         # ``request_async`` / ``request_stream_async``. Exposed via
@@ -164,32 +208,189 @@ class BaseProviderClient(ABC):
             )
         return self._sync_client
 
+    # --- Backward-compat shim for tests that monkey-patch ``_async_client``.
+    #
+    # The canonical cache is ``self._async_clients`` (per-loop). Many tests
+    # historically inject a ``httpx.AsyncClient`` carrying a ``MockTransport``
+    # by assigning ``client._async_client = httpx.AsyncClient(transport=...)``
+    # — that pattern stays supported. The getter returns whatever entry the
+    # current loop has (or any entry if there's no current loop, for tests
+    # asserting "an async client was created"). The setter routes the value
+    # into the current loop's slot.
+    #
+    # Don't add NEW call sites that touch ``_async_client`` — call
+    # ``_get_async_client()`` from runtime code so the per-loop semantics
+    # apply. The property is here strictly to avoid touching ~30 existing
+    # test files in one change.
+    @property
+    def _async_client(self) -> httpx.AsyncClient | None:
+        try:
+            key = id(asyncio.get_running_loop())
+        except RuntimeError:
+            # No running loop — return any cached entry for test inspection,
+            # preferring (1) a sync-time injected client, (2) the first
+            # per-loop entry (insertion order = creation order).
+            if self._injected_async_client is not None:
+                return self._injected_async_client
+            for entry in self._async_clients.values():
+                return entry.client
+            return None
+        entry = self._async_clients.get(key)
+        if entry is not None:
+            return entry.client
+        # Fall back to a sync-time injection if the test set one up before
+        # entering the loop.
+        return self._injected_async_client
+
+    @_async_client.setter
+    def _async_client(self, value: httpx.AsyncClient | None) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            loop = None
+        if value is None:
+            # Clearing: drop the matching entry. With no loop, drop all (the
+            # only sensible interpretation of ``client._async_client = None``
+            # from sync test teardown).
+            if loop is None:
+                self._async_clients.clear()
+                self._injected_async_client = None
+            else:
+                self._async_clients.pop(id(loop), None)
+            return
+        if loop is None:
+            # Test harness pre-seeds an AsyncClient from sync setup. Stash it
+            # as the "injected" client; the runtime path will adopt it for
+            # whatever loop is current at the first ``_get_async_client``
+            # call. This preserves the historical injection pattern used by
+            # dozens of unit tests without forcing them to enter an async
+            # context just to set up a mock transport.
+            self._injected_async_client = value
+            return
+        self._async_clients[id(loop)] = _LoopClient(loop=loop, client=value)
+        # An explicit in-loop assignment overrides any earlier sync-time
+        # injection: the test has now picked the loop it wants the client
+        # bound to.
+        self._injected_async_client = None
+
+    def _reap_dead_async_clients(self) -> None:
+        """Drop entries whose bound loop is closed. Called opportunistically
+        from ``_get_async_client``; the dropped sockets are already gone
+        because the loop's selector closed with the loop, so there is no
+        aclose to do.
+        """
+        dead = [k for k, lc in self._async_clients.items() if lc.loop.is_closed()]
+        for k in dead:
+            del self._async_clients[k]
+
     def _get_async_client(self) -> httpx.AsyncClient:
-        if self._async_client is None:
-            self._async_client = create_async_http_client(
+        # Reap any entries whose loop has closed since we last looked. This
+        # bounds the dict size in long-running processes that churn through
+        # many short-lived loops (typical for ThreadPoolExecutor + run_sync).
+        self._reap_dead_async_clients()
+
+        # Resolve the current loop. ``_get_async_client`` is invoked from
+        # inside async request handlers in normal use, so a running loop
+        # is available. If a caller touches the cache outside any loop
+        # (sync test inspection, ``close()`` teardown), prefer the
+        # sync-time injection slot if one exists; otherwise build an
+        # uncached fresh client. We deliberately do NOT use the deprecated
+        # ``get_event_loop_policy().get_event_loop()`` — that synthesizes
+        # a "current" loop that almost certainly isn't the loop the next
+        # await will run on, and the synthesized loop's id collides badly
+        # with the per-loop cache.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            if self._injected_async_client is not None:
+                return self._injected_async_client
+            # Called from sync code with no loop. Build once and stash in
+            # the injection slot so a subsequent ``_get_async_client`` from
+            # inside an ``asyncio.run`` adopts the same instance — and so
+            # the ``_async_client`` property returns this client to test
+            # code that pokes at it from sync setup. Matches the historical
+            # single-slot lazy-init behavior.
+            fresh = create_async_http_client(
                 base_url=self._base_url,
                 timeout=self._timeout,
                 trust_env=self._settings.trust_env,
             )
-        return self._async_client
+            self._injected_async_client = fresh
+            return fresh
+
+        key = id(loop)
+        cached = self._async_clients.get(key)
+        if cached is not None and not cached.loop.is_closed():
+            return cached.client
+
+        # No entry for this loop. If a test pre-seeded an AsyncClient from
+        # sync setup (the ``client._async_client = httpx.AsyncClient(...)``
+        # pattern in ~30 test files), adopt it for THIS loop and keep the
+        # injection slot live so any later loops (e.g. each call in a
+        # sync-chat-twice flow goes through its own ``asyncio.run``) also
+        # adopt the same mock. The injection is cleared only by an explicit
+        # ``client._async_client = None`` or by ``close()``. In practice
+        # tests use ``MockTransport`` which is loop-agnostic, so reusing
+        # one AsyncClient across multiple loops is safe.
+        if self._injected_async_client is not None:
+            self._async_clients[key] = _LoopClient(loop=loop, client=self._injected_async_client)
+            return self._injected_async_client
+
+        # Build fresh.
+        client = create_async_http_client(
+            base_url=self._base_url,
+            timeout=self._timeout,
+            trust_env=self._settings.trust_env,
+        )
+        self._async_clients[key] = _LoopClient(loop=loop, client=client)
+        return client
 
     def close(self) -> None:
-        """Close underlying HTTP clients."""
+        """Close underlying HTTP clients.
+
+        For the async clients, only those whose bound loop is still alive
+        can be aclosed cleanly. Entries on closed loops are dropped — their
+        sockets died with the loop's selector and httpx can't aclose them
+        from a different loop.
+        """
         if self._sync_client is not None:
             self._sync_client.close()
             self._sync_client = None
-        if self._async_client is not None:
-            run_sync(self._async_client.aclose())
-            self._async_client = None
+        # Drop every per-loop entry. We deliberately don't aclose them: the
+        # only loops we could aclose into are this thread's current loop
+        # (which sync ``close()`` doesn't have running) or some other
+        # thread's loop (which we can't reach). httpx's own __del__ will
+        # close the sockets on GC. This is sub-optimal but safer than
+        # racing aclose across loops — that's the bug class this whole
+        # cache scheme is here to fix.
+        self._async_clients.clear()
+        # Also drop any sync-time injected client so a subsequent attribute
+        # read returns None as the test expects.
+        self._injected_async_client = None
 
     async def aclose(self) -> None:
-        """Async close underlying HTTP clients."""
+        """Async close underlying HTTP clients.
+
+        Aclose entries that belong to the *current* loop. Entries bound to
+        other loops are dropped without aclose — httpx raises on
+        cross-loop aclose, and the other loop's owner is responsible for
+        its own teardown.
+        """
         if self._sync_client is not None:
             self._sync_client.close()
             self._sync_client = None
-        if self._async_client is not None:
-            await self._async_client.aclose()
-            self._async_client = None
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        for key in list(self._async_clients.keys()):
+            entry = self._async_clients.pop(key)
+            if (
+                current_loop is not None
+                and entry.loop is current_loop
+                and not entry.loop.is_closed()
+            ):
+                await entry.client.aclose()
 
     def __enter__(self) -> BaseProviderClient:
         return self
