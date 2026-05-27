@@ -775,3 +775,136 @@ class TestSyncRequestPath:
         client = FunctionClient(function=handler)
         result = client.request([{"role": "user", "content": "Hi"}])
         assert result.text == "sync-ok"
+
+
+# ===========================================================================
+# Stale-loop AsyncClient cache regression (the run_sync + threadpool bug)
+# ===========================================================================
+
+
+class TestAsyncClientLoopAffinity:
+    """The cached ``self._async_client`` is bound to whatever event loop is
+    current when it's opened. ``chat()`` uses ``run_sync`` which falls back
+    to ``asyncio.run(coro)`` — that creates a loop, runs once, then closes
+    it. Re-entering ``chat()`` from the same thread (e.g. a ThreadPoolExecutor
+    worker reusing the provider across submits) used to reuse the cached
+    client and raise ``RuntimeError: Event loop is closed`` on the second
+    call. The fix stamps the bound loop and re-inits when it's stale.
+    """
+
+    def test_async_client_rebuilds_after_loop_closes(self) -> None:
+        import asyncio
+
+        client = OpenAIClient(model="gpt-5", api_key="test-key")
+
+        async def fetch_pair() -> tuple[httpx.AsyncClient, asyncio.AbstractEventLoop]:
+            return client._get_async_client(), asyncio.get_running_loop()
+
+        # First asyncio.run: builds the AsyncClient bound to a new loop,
+        # returns, then closes the loop.
+        first, first_loop = asyncio.run(fetch_pair())
+        assert first is not None
+        # asyncio.run closes the loop on return.
+        assert first_loop.is_closed()
+
+        # Second asyncio.run on the same thread: the per-loop cache must
+        # not return the dead client. _get_async_client either reaps the
+        # closed-loop entry or builds a new one for the new loop.
+        second, second_loop = asyncio.run(fetch_pair())
+        assert second is not first, (
+            "stale AsyncClient returned across asyncio.run boundaries — "
+            "per-loop cache did not detect the closed loop"
+        )
+        assert second_loop is not first_loop
+
+    def test_chat_sync_survives_threadpool_reuse(self) -> None:
+        """End-to-end regression: ``chat()`` from a single-worker thread pool
+        must succeed on the second submission to the same worker.
+
+        Uses ``FunctionClient`` so the call doesn't touch HTTP, but we wire
+        the same lazy-AsyncClient construction by force-touching
+        ``_get_async_client()`` from inside the handler — that reproduces the
+        cache-on-closed-loop chain a real provider would hit.
+        """
+        import asyncio
+        import concurrent.futures
+
+        # Each handler invocation captures the running loop it ran on. Loop
+        # identity is stable (we hold a reference) so this comparison is
+        # reliable, unlike ``id(client_obj)`` which Python recycles when
+        # the previous client is dropped.
+        seen_loops: list[asyncio.AbstractEventLoop] = []
+
+        def handler(messages: list[dict[str, Any]], profile: ModelProfile) -> ProviderResponse:
+            client._get_async_client()  # touch the lazy path
+            seen_loops.append(asyncio.get_running_loop())
+            return _make_response("ok")
+
+        client = FunctionClient(function=handler)
+
+        def one_call() -> str:
+            return client.chat([{"role": "user", "content": "ping"}]).text
+
+        # Single worker → both submits land on the same thread, which is
+        # exactly the failure shape (same thread, fresh asyncio.run loop
+        # per submit, stale cache from the previous loop).
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+            r1 = ex.submit(one_call).result()
+            r2 = ex.submit(one_call).result()
+
+        assert r1 == "ok"
+        assert r2 == "ok", "second chat() in threadpool worker raised — fix regression"
+        assert len(seen_loops) == 2
+        # The AsyncClient must have been re-bound to a different loop between
+        # calls — the first loop was closed by the first asyncio.run.
+        assert seen_loops[0] is not seen_loops[1], (
+            "AsyncClient stayed bound to the same (closed) loop across calls "
+            "— the stale-loop detection did not fire"
+        )
+        # And the loop the first call ran on is now closed, proving the
+        # repro path matched the bug's actual conditions.
+        first_loop = seen_loops[0]
+        assert first_loop.is_closed()
+
+    def test_concurrent_threads_get_distinct_async_clients(self) -> None:
+        """Two threads that share a provider must get DIFFERENT AsyncClient
+        instances, each bound to its own loop. The single-slot cache used
+        to hand the second thread a client bound to the first thread's
+        loop (cross-thread bug); the per-loop dict eliminates that.
+        """
+        import asyncio
+        import threading
+        import time
+
+        client = OpenAIClient(model="gpt-5", api_key="test-key")
+        results: dict[str, object] = {}
+
+        def slow_thread() -> None:
+            async def main() -> None:
+                results["slow_client"] = client._get_async_client()
+                results["slow_loop"] = asyncio.get_running_loop()
+                await asyncio.sleep(0.25)  # keep this loop alive across the fast thread
+
+            asyncio.run(main())
+
+        def fast_thread() -> None:
+            time.sleep(0.05)  # let slow_thread claim first
+
+            async def main() -> None:
+                results["fast_client"] = client._get_async_client()
+                results["fast_loop"] = asyncio.get_running_loop()
+
+            asyncio.run(main())
+
+        t_slow = threading.Thread(target=slow_thread)
+        t_fast = threading.Thread(target=fast_thread)
+        t_slow.start()
+        t_fast.start()
+        t_slow.join()
+        t_fast.join()
+
+        assert results["slow_client"] is not results["fast_client"], (
+            "two threads with concurrent loops got the same AsyncClient — "
+            "the fast thread inherited the slow thread's loop binding"
+        )
+        assert results["slow_loop"] is not results["fast_loop"]
