@@ -6,6 +6,40 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [Unreleased]
+
+### Fixed
+
+- **Silent truncation of complete structured output containing an inline
+  unescaped quote.** When a model returned a *complete* JSON object whose
+  string field contained an unescaped double-quote (e.g. a memo quoting
+  document text verbatim: `...provisions "shall remain in full force..."`),
+  `ProviderResponse.output_json` / `json_utils.extract_json` fell through to
+  `pydantic_core.from_json(allow_partial="trailing-strings")`, which
+  truncated the value at the bad quote and dropped every trailing field. The
+  truncated fragment was returned with no warning, so iterative agents
+  falsely "converged" on a partial deliverable.
+  - `extract_json` now salvages such objects by re-escaping inline unescaped
+    quotes *before* lenient partial recovery (new internal
+    `_repair_inline_quotes`). A complete object now round-trips with all
+    fields intact.
+  - `extract_json(text, *, allow_partial=...)` gained a keyword to disable the
+    lenient `pydantic_core` recovery path. Default `True` preserves existing
+    behavior.
+  - `ProviderResponse.output_json` now suppresses lenient partial recovery
+    when `stop_reason` indicates the model finished cleanly (`end_turn`,
+    `stop`, `stop_sequence`, `tool_use`, `tool_calls`): complete-but-malformed
+    output is repaired or returns `None` (fail loud) instead of being silently
+    truncated. Genuinely truncated streams (e.g. `max_tokens`) still use
+    partial recovery unchanged.
+
+### Compatibility
+
+- The genuine-truncation recovery path is preserved. Public signatures are
+  unchanged except for the additive, default-preserving `allow_partial`
+  keyword on `extract_json`.
+
+
 ## [0.1.8] — 2026-05-27
 
 Bug-fix release. The cached `httpx.AsyncClient` on `BaseProviderClient`

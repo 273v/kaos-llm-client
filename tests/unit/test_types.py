@@ -188,6 +188,47 @@ class TestProviderResponse:
         resp = self._make_response(parts=[ContentPart(type="text", text="not json at all")])
         assert resp.output_json is None
 
+    # --- Inline-unescaped-quote regression (silent truncation) ---
+
+    _BAD = (
+        '{"memo": "The clause says "shall remain in full force" and effect.", '
+        '"score": 5, "needs_more_extraction": true}'
+    )
+
+    def test_output_json_complete_inline_quote_keeps_all_fields(self):
+        # A complete object (stop_reason=end_turn) whose string field has an
+        # inline unescaped quote must NOT be truncated to its first field.
+        resp = self._make_response(
+            parts=[ContentPart(type="text", text=self._BAD)],
+            stop_reason="end_turn",
+        )
+        result = resp.output_json
+        assert isinstance(result, dict)
+        assert set(result) == {"memo", "score", "needs_more_extraction"}
+        assert result["needs_more_extraction"] is True
+
+    def test_output_json_no_partial_recovery_on_clean_stop(self):
+        # Genuinely-unrepairable garbage with a clean stop reason returns None
+        # (fail loud) rather than a silently-truncated fragment.
+        truncated = '{"memo": "cut off mid stream with no close'
+        resp = self._make_response(
+            parts=[ContentPart(type="text", text=truncated)],
+            stop_reason="end_turn",
+        )
+        assert resp.output_json is None
+
+    def test_output_json_partial_recovery_on_max_tokens(self):
+        # When the stream WAS truncated (max_tokens), partial recovery still
+        # salvages a usable prefix.
+        truncated = '{"memo": "cut off mid stream with no close'
+        resp = self._make_response(
+            parts=[ContentPart(type="text", text=truncated)],
+            stop_reason="max_tokens",
+        )
+        result = resp.output_json
+        assert isinstance(result, dict)
+        assert "memo" in result
+
     def test_transport_metadata(self):
         resp = self._make_response(
             status_code=200,

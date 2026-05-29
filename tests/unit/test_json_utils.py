@@ -84,3 +84,62 @@ class TestExtractJson:
     def test_numeric_types(self):
         result = extract_json('{"int": 42, "float": 3.14}')
         assert result == {"int": 42, "float": 3.14}
+
+
+class TestInlineUnescapedQuoteSalvage:
+    """A COMPLETE object whose string field contains an unescaped inline ``"``
+    must round-trip without dropping trailing fields.
+
+    Regression: ``pydantic_core.from_json(allow_partial="trailing-strings")``
+    silently truncated such objects to their first field, so trailing fields
+    (``score``/``needs_more_extraction``/...) were lost and iterative loops
+    falsely "converged" on a fragment.
+    """
+
+    # Complete object: the ``memo`` value quotes document text verbatim with
+    # an unescaped double-quote, and trailing fields follow.
+    BAD = (
+        '{"memo": "The clause says "shall remain in full force" and effect.", '
+        '"score": 5, "needs_more_extraction": true}'
+    )
+
+    def test_inline_quote_preserves_all_fields(self):
+        result = extract_json(self.BAD)
+        assert result is not None
+        assert set(result) == {"memo", "score", "needs_more_extraction"}
+        assert result["score"] == 5
+        assert result["needs_more_extraction"] is True
+        assert "shall remain in full force" in result["memo"]
+
+    def test_inline_quote_in_code_fence(self):
+        text = f"```json\n{self.BAD}\n```"
+        result = extract_json(text)
+        assert result is not None
+        assert set(result) == {"memo", "score", "needs_more_extraction"}
+        assert result["needs_more_extraction"] is True
+
+    def test_no_partial_truncation_to_first_field(self):
+        # The historical bug returned exactly {"memo": "<prefix>"} and nothing
+        # else. Guard against that specific regression.
+        result = extract_json(self.BAD)
+        assert result != {"memo": "The clause says "}
+
+    def test_allow_partial_false_does_not_truncate_complete_object(self):
+        # Even with partial recovery disabled, the repair salvage must recover
+        # the complete object.
+        result = extract_json(self.BAD, allow_partial=False)
+        assert result is not None
+        assert set(result) == {"memo", "score", "needs_more_extraction"}
+
+    def test_genuine_truncation_still_recovered_when_allowed(self):
+        # A genuinely truncated stream (cut off mid-string, no closing quote /
+        # braces) must still be recovered by partial recovery.
+        truncated = '{"memo": "The clause says shall remain in full force and ef'
+        result = extract_json(truncated, allow_partial=True)
+        assert result is not None
+        assert "memo" in result
+
+    def test_genuine_truncation_suppressed_when_partial_disabled(self):
+        truncated = '{"memo": "The clause says shall remain in full force and ef'
+        # With partial disabled and no structural close, nothing parses.
+        assert extract_json(truncated, allow_partial=False) is None
