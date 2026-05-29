@@ -336,20 +336,44 @@ class ProviderResponse(KaosModel):
 
     @property
     def output_json(self) -> dict[str, Any] | list[Any] | None:
-        """Parsed JSON from text content, or None if not valid JSON."""
+        """Parsed JSON from text content, or None if not valid JSON.
+
+        Lenient partial-JSON recovery (``pydantic_core`` with
+        ``allow_partial``) is only attempted when the response was actually
+        truncated. When ``stop_reason`` indicates the model finished cleanly
+        (``end_turn``/``stop``/``tool_calls``/``tool_use``), partial recovery
+        is suppressed: a complete object that merely contains an inline
+        unescaped quote is repaired via :func:`extract_json`'s quote salvage,
+        and anything still unparseable returns ``None`` (fail loud) rather than
+        being silently truncated to its first field.
+        """
         text = self.text
         if not text:
             return None
         try:
             result = json.loads(text)
         except (json.JSONDecodeError, ValueError):
-            # Try stripping markdown code fences
+            # Try stripping markdown code fences and salvaging the object.
             from kaos_llm_client.json_utils import extract_json
 
-            result = extract_json(text)
+            result = extract_json(text, allow_partial=self._truncation_plausible())
         if isinstance(result, dict | list):
             return result
         return None
+
+    def _truncation_plausible(self) -> bool:
+        """Whether the response could have been cut off mid-stream.
+
+        Returns ``False`` for stop reasons that mean the model finished its
+        turn cleanly, so lenient partial-JSON recovery is not applied to
+        complete output. Unknown/absent stop reasons conservatively return
+        ``True`` to preserve the existing recovery path for genuine
+        truncation.
+        """
+        sr = (self.stop_reason or "").lower()
+        # Clean completion markers across providers (Anthropic / OpenAI).
+        complete = {"end_turn", "stop", "stop_sequence", "tool_use", "tool_calls"}
+        return sr not in complete
 
 
 # ---------------------------------------------------------------------------
