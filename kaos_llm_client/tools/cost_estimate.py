@@ -121,7 +121,7 @@ class KaosLLMCostEstimateTool(KaosTool):
             f"{max_output_tokens} max output tokens = ${total_cost:.6f} USD"
         )
 
-        logger.info(
+        logger.debug(
             "Cost estimate: model=%s, input_tokens=%d, cost=$%.6f",
             model_name,
             estimated_input_tokens,

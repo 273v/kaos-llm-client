@@ -231,7 +231,7 @@ class KaosLLMChatTool(KaosTool):
             "latency_ms": response.latency_ms,
         }
 
-        logger.info(
+        logger.debug(
             "LLM chat completed: model=%s, tokens=%d",
             response.model,
             response.usage.total_tokens,

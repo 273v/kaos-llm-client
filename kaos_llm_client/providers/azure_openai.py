@@ -172,7 +172,7 @@ class AzureOpenAIClient(_AzureAuthMixin, OpenAIClient):
             except Exception:
                 estimated_usd = None
             try:
-                logger.info(
+                logger.debug(
                     "LLM call complete",
                     extra=self._log_extra(
                         request=request,
