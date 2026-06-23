@@ -113,7 +113,7 @@ class KaosLLMProviderCheckTool(KaosTool):
         else:
             summary = "No providers configured. Set API keys in environment variables."
 
-        logger.info(
+        logger.debug(
             "Provider check: %d/%d configured",
             configured_count,
             len(results),

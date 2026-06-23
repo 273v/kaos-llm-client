@@ -69,7 +69,7 @@ class InstrumentedClient(WrapperClient):
         base_extra: dict[str, Any] = {}
         if callable(log_extra_fn):
             base_extra = log_extra_fn()
-        logger.info(
+        logger.debug(
             "LLM request completed",
             extra={
                 **base_extra,

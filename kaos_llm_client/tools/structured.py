@@ -196,7 +196,7 @@ class KaosLLMStructuredOutputTool(KaosTool):
             "latency_ms": response.latency_ms,
         }
 
-        logger.info(
+        logger.debug(
             "LLM JSON completed: model=%s, tokens=%d",
             response.model,
             response.usage.total_tokens,

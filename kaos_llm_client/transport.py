@@ -925,7 +925,7 @@ async def execute_with_retry(
                 provider=provider,
             )
             response.extensions["latency_ms"] = latency_ms  # type: ignore[index]
-            logger.info(
+            logger.debug(
                 "service_tier=%r fallback succeeded for %s on %s",
                 original_tier,
                 request.model,

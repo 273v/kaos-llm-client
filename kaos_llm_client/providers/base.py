@@ -619,7 +619,7 @@ class BaseProviderClient(ABC):
             response_id = result.response_id if result is not None else None
             latency_ms = getattr(result, "latency_ms", None) if result is not None else None
 
-            logger.info(
+            logger.debug(
                 "LLM call complete",
                 extra=self._log_extra(
                     request=request,

@@ -220,7 +220,7 @@ class KaosLLMToolCallTool(KaosTool):
         }
 
         n_calls = len(tool_calls_data)
-        logger.info(
+        logger.debug(
             "LLM tool call completed: model=%s, tool_calls=%d, tokens=%d",
             response.model,
             n_calls,

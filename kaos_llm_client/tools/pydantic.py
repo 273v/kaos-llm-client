@@ -240,7 +240,7 @@ class KaosLLMPydanticTool(KaosTool):
             "latency_ms": last_response.latency_ms,
         }
 
-        logger.info(
+        logger.debug(
             "LLM pydantic completed: model=%s, tokens=%d",
             last_response.model,
             last_response.usage.total_tokens,

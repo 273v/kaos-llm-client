@@ -374,7 +374,7 @@ def apply_pricing_overlay(
     if target is None:
         target = MODEL_PRICING
     target.update(overlay)
-    logger.info(
+    logger.debug(
         "Pricing overlay merged: %d models (added/replaced)",
         len(overlay),
     )

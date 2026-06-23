@@ -173,7 +173,7 @@ class KaosLLMEmbedTool(KaosTool):
             "usage": usage_dict,
         }
 
-        logger.info(
+        logger.debug(
             "LLM embed completed: model=%s, count=%d, dims=%d",
             response.model,
             n_embeddings,
