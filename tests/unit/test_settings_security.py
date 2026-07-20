@@ -245,4 +245,4 @@ def test_each_protected_field_rejects_http(field: str) -> None:
     # all ``str | None`` URLs at runtime, so this is safe.
     kwargs: dict[str, str] = {field: "http://attacker.example.com"}
     with pytest.raises(ValidationError):
-        KaosLLMSettings(**kwargs)  # ty: ignore[invalid-argument-type]
+        KaosLLMSettings(**kwargs)
