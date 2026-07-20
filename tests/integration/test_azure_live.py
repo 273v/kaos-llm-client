@@ -194,7 +194,7 @@ async def test_azure_responses_live_aad() -> None:
         # `azure-identity` is provided by the optional `[azure]` extra:
         #   uv add 'kaos-llm-client[azure]'
         # The test gracefully skips when the extra isn't installed.
-        from azure.identity import (  # ty: ignore[unresolved-import]
+        from azure.identity import (
             DefaultAzureCredential,
             get_bearer_token_provider,
         )
