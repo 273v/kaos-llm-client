@@ -25,6 +25,8 @@ which should ever trip the validator.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 from pydantic import ValidationError
 
@@ -240,9 +242,10 @@ class TestAllowInsecureBaseUrl:
 def test_each_protected_field_rejects_http(field: str) -> None:
     """Every URL in ``_BASE_URL_FIELDS`` is policed."""
     # We construct via ``**kwargs`` so a single test parametrizes over
-    # every protected field. ``ty`` can't see through ``**dict[str, str]``
-    # and complains about each field's individual type — the values are
-    # all ``str | None`` URLs at runtime, so this is safe.
-    kwargs: dict[str, str] = {field: "http://attacker.example.com"}
+    # every protected field. The dict is typed ``dict[str, Any]`` because
+    # unpacking it type-checks against every ``BaseSettings.__init__``
+    # parameter (including pydantic-settings' ``_env_file``/``_cli_*``
+    # options), not just the one field name chosen at runtime.
+    kwargs: dict[str, Any] = {field: "http://attacker.example.com"}
     with pytest.raises(ValidationError):
         KaosLLMSettings(**kwargs)
