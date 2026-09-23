@@ -134,7 +134,9 @@ class TestOpenRouterParseResponse:
 class TestOpenRouterAuthError:
     """Tests for OpenRouterClient auth error handling."""
 
-    def test_missing_api_key_raises(self):
+    def test_missing_api_key_raises(self, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.delenv("KAOS_LLM_OPENROUTER_API_KEY", raising=False)
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         client = OpenRouterClient(model="openai/gpt-5")
         with pytest.raises(KaosLLMAuthError, match="OpenRouter API key is not configured"):
             client._get_api_key_from_settings()
