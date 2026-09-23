@@ -68,7 +68,7 @@ azure = [
 # (see `kaos_llm_client.serve`). Install with
 # `pip install kaos-llm-client[mcp]` to run the LLM-client MCP server.
 mcp = [
-  "kaos-mcp>=0.1.0,<0.2",
+  "kaos-mcp>=0.1.5,<0.2",
 ]
 
 [project.scripts]
